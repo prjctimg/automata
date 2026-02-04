@@ -87,7 +87,7 @@ jobs:
     needs: check-updates
     if: |
       github.event_name != 'schedule' || 
-      needs.check-updates.outputs.should_run == 'true' ||
+      (needs.check-updates.result == 'success' && needs.check-updates.outputs.should_run == 'true') ||
       github.event.inputs.force == 'true'
 
     permissions:
@@ -257,7 +257,7 @@ jobs:
     needs: check-updates
     if: |
       github.event_name != 'schedule' || 
-      needs.check-updates.outputs.should_run == 'true' ||
+      (needs.check-updates.result == 'success' && needs.check-updates.outputs.should_run == 'true') ||
       github.event.inputs.force == 'true'
     
     permissions:
@@ -277,6 +277,14 @@ jobs:
         run: |
           echo "📦 Installing dependencies..."
           npm install
+
+      - name: Install p5 types and tsdown
+        if: |
+          github.event.inputs.skip_types != 'true' && 
+          github.event.inputs.modules_only != 'true'
+        run: |
+          echo "📦 Installing p5 types and tsdown..."
+          npm install @types/p5 tsdown
 
       - name: Clone p5.js
         run: |
