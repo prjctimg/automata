@@ -6,7 +6,7 @@ const path = require('path');
 console.log('🚀 Starting p5 type bundling...');
 
 const outputDir = 'assets/types';
-const outputFile = path.join(outputDir, 'index.d.ts');
+const outputFile = path.join(outputDir, 'p5.d.ts');
 
 // Ensure output directory exists
 if (!fs.existsSync(outputDir)) {
