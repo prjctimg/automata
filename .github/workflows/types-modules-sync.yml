@@ -219,6 +219,7 @@ jobs:
           cd /tmp/p5.nvim
 
           # Copy generated docs
+          mkdir -p doc/
           cp -r /home/runner/work/automata/automata/doc/* doc/ || true
 
           # Configure git
