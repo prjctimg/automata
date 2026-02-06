@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-console.log('🚀 Starting comprehensive p5.js documentation generation...');
+console.log('🚀 Starting p5.js module-specific documentation generation...');
 
 const outputDir = 'doc';
 const assetsDir = 'assets';
@@ -17,450 +17,376 @@ if (!fs.existsSync(assetsDir)) {
   fs.mkdirSync(assetsDir, { recursive: true });
 }
 
+// Module emoji mapping
+const moduleEmojis = {
+  'accessibility': '♿',
+  'color': '🎨',
+  'core': '⚙️',
+  'data': '📊',
+  'dom': '🌐',
+  'events': '🖱️',
+  'image': '🖼️',
+  'io': '📁',
+  'math': '🔢',
+  'typography': '📝',
+  'utilities': '🛠️',
+  'webgl': '🎮'
+};
+
 try {
-  console.log('📥 Cloning p5.js repository for documentation...');
+  console.log('📖 Extracting documentation from @types/p5...');
   
-  // Clone p5.js if not already present
-  const p5RepoPath = '/tmp/p5.js-docs';
-  if (fs.existsSync(p5RepoPath)) {
-    execSync(`rm -rf ${p5RepoPath}`, { stdio: 'inherit' });
+  // Get p5 version from package.json
+  const p5PackageJson = JSON.parse(fs.readFileSync('node_modules/@types/p5/package.json', 'utf8'));
+  const p5Version = p5PackageJson.version || '1.7.7';
+  
+  // Get current timestamp
+  const now = new Date();
+  const timestamp = now.toISOString().replace(/T/, ' ').replace(/\..+/, '');
+  const formattedTimestamp = now.toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-');
+  
+  console.log(`📦 p5.js version: ${p5Version}`);
+  console.log(`📅 Last updated: ${timestamp}`);
+  
+  // Read the bundled TypeScript definitions
+  const typesFile = 'assets/types/p5.d.ts';
+  if (!fs.existsSync(typesFile)) {
+    console.error('❌ TypeScript definitions not found. Run types generation first.');
+    process.exit(1);
   }
-  execSync(`git clone --depth 1 https://github.com/processing/p5.js.git ${p5RepoPath}`, { stdio: 'inherit' });
   
-  console.log('📖 Generating comprehensive documentation...');
+  const typesContent = fs.readFileSync(typesFile, 'utf8');
   
-  // Always use the comprehensive documentation from TypeScript definitions
-  // since p5.js source is not structured for easy JSDoc extraction
-  console.log('🔄 Using comprehensive documentation from TypeScript definitions...');
-  generateDocsFromTypes();
+  // Parse modules from the TypeScript definitions
+  const modules = parseModulesFromTypes(typesContent);
   
-  // Step 3: Convert to Vim documentation if pandoc is available
-  console.log('📝 Converting to Vim documentation...');
-  try {
-    // Try to use pandoc if available
-    execSync('which pandoc', { stdio: 'pipe' });
+  console.log(`📚 Found ${Object.keys(modules).length} modules`);
+  
+  // Generate documentation for each module
+  for (const [moduleName, moduleData] of Object.entries(modules)) {
+    console.log(`📝 Generating documentation for ${moduleName}...`);
     
-    const markdownFile = path.join(outputDir, 'p5.md');
-    const vimdocFile = path.join(outputDir, 'p5.txt');
+    // Generate markdown for this module
+    const markdown = generateModuleMarkdown(moduleName, moduleData, p5Version, timestamp);
     
-    // Convert markdown to vimdoc using pandoc
-    const pandocCmd = `pandoc "${markdownFile}" -f markdown -t vim --metadata=title=p5 --variable=description="p5.js API Documentation" -o "${vimdocFile}"`;
-    execSync(pandocCmd, { stdio: 'inherit' });
+    // Remove internal links
+    const cleanMarkdown = removeInternalLinks(markdown);
     
-    console.log(`✅ Vim documentation written to: ${vimdocFile}`);
+    // Convert to Vimdoc using pandoc
+    const vimdoc = convertToVimdoc(cleanMarkdown, moduleName, p5Version, timestamp);
     
-  } catch (pandocError) {
-    console.warn('⚠️  Pandoc not available, creating simple Vim documentation...');
-    createSimpleVimDoc();
+    // Save as p5-[module][emoji].txt
+    const emoji = moduleEmojis[moduleName] || '📄';
+    const filename = `p5-${moduleName}${emoji}.txt`;
+    const filepath = path.join(outputDir, filename);
+    
+    fs.writeFileSync(filepath, vimdoc);
+    console.log(`✅ Generated ${filename}`);
   }
   
-  // Step 4: Copy assets to correct locations
-  console.log('📦 Organizing assets...');
+  // Generate a master index file
+  generateMasterIndex(modules, p5Version, timestamp);
   
-  // Ensure assets/types and assets/libs exist
-  const assetsTypesDir = path.join(assetsDir, 'types');
-  const assetsLibsDir = path.join(assetsDir, 'libs');
-  
-  if (!fs.existsSync(assetsTypesDir)) {
-    fs.mkdirSync(assetsTypesDir, { recursive: true });
-  }
-  if (!fs.existsSync(assetsLibsDir)) {
-    fs.mkdirSync(assetsLibsDir, { recursive: true });
-  }
-  
-  // Copy types if they exist in the expected location
-  const currentTypesDir = 'assets/types';
-  if (fs.existsSync(currentTypesDir)) {
-    const typesFiles = fs.readdirSync(currentTypesDir);
-    typesFiles.forEach(file => {
-      fs.copyFileSync(
-        path.join(currentTypesDir, file),
-        path.join(assetsTypesDir, file)
-      );
-    });
-    console.log('✅ Types copied to assets/types/');
-  }
-  
-  // Copy libs if they exist
-  const currentLibsDir = 'assets/libs';
-  if (fs.existsSync(currentLibsDir)) {
-    const libsFiles = fs.readdirSync(currentLibsDir);
-    libsFiles.forEach(file => {
-      fs.copyFileSync(
-        path.join(currentLibsDir, file),
-        path.join(assetsLibsDir, file)
-      );
-    });
-    console.log('✅ Libraries copied to assets/libs/');
-  }
-  
-  console.log('✅ Comprehensive documentation generation complete!');
-  console.log(`📁 Documentation available in: ${outputDir}/`);
-  console.log(`📁 Assets organized in: ${assetsDir}/`);
+  console.log('✅ Module-specific documentation generation complete!');
+  console.log(`📁 Generated ${Object.keys(modules).length} manpages in ${outputDir}/`);
   
 } catch (error) {
   console.error('❌ Error generating documentation:', error.message);
   process.exit(1);
 }
 
-function generateDocsFromTypes() {
-  console.log('📖 Generating comprehensive documentation from TypeScript definitions...');
+function parseModulesFromTypes(typesContent) {
+  const modules = {};
   
-  const typesFile = 'assets/types/p5.d.ts';
-  if (fs.existsSync(typesFile)) {
-    const typesContent = fs.readFileSync(typesFile, 'utf8');
-    
-    // Extract comprehensive API documentation
-    let docContent = `# p5.js Complete API Documentation
-
-Generated: ${new Date().toISOString()}
-Source: TypeScript Definitions
-
-## Table of Contents
-
-- [Core Functions](#core-functions)
-- [Environment](#environment)
-- [Data](#data)
-- [Typography](#typography)
-- [Interaction](#interaction)
-- [Math](#math)
-- [Color](#color)
-- [Image](#image)
-- [Rendering](#rendering)
-- [Structure](#structure)
-- [Transform](#transform)
-- [Events](#events)
-- [DOM](#dom)
-- [Media](#media)
-- [Shape](#shape)
-- [WebGL](#webgl)
-- [Sound](#sound)
-- [Classes](#classes)
-
----
-
-## Core Functions
-
-### setup()
-Called once when the program starts. Used to define initial environment properties.
-
-### draw()
-Called continuously in a loop. Used to update and display the canvas.
-
-### createCanvas(width, height, renderer?)
-Creates a canvas element in the document.
-
-**Parameters:**
-- \`width\` (number): Width of the canvas
-- \`height\` (number): Height of the canvas
-- \`renderer\` (string, optional): Rendering mode ('P2D', 'WEBGL')
-
-### background(color)
-Sets the background color.
-
-**Parameters:**
-- \`color\` (number|string|p5.Color): Background color
-
----
-
-## Environment
-
-### frameRate
-The system frame rate.
-
-### frameCount
-Number of frames processed.
-
-### deltaTime
-Time elapsed since the last frame.
-
-### getTargetFrameRate()
-Returns the current target frame rate.
-
-### setTargetFrameRate(fps)
-Sets the target frame rate.
-
-**Parameters:**
-- \`fps\` (number): Target frame rate
-
----
-
-## Data
-
-### print(...args)
-Prints values to the console.
-
-**Parameters:**
-- \`...\`args (any): Values to print
-
-### random(...args)
-Generates random numbers.
-
-**Parameters:**
-- \`...\`args (number): Range parameters
-
-### noise(x, y, z?)
-Perlin noise function.
-
-**Parameters:**
-- \`x\` (number): X coordinate
-- \`y\` (number): Y coordinate
-- \`z\` (number, optional): Z coordinate
-
----
-
-## Typography
-
-### text(str, x, y, x2?, y2?)
-Displays text on the canvas.
-
-**Parameters:**
-- \`str\` (string): Text to display
-- \`x\` (number): X position
-- \`y\` (number): Y position
-- \`x2\` (number, optional): Width
-- \`y2\` (number, optional): Height
-
-### textSize(size)
-Sets the text size.
-
-**Parameters:**
-- \`size\` (number): Text size
-
-### textFont(font, size?)
-Sets the text font.
-
-**Parameters:**
-- \`font\` (string|p5.Font): Font to use
-- \`size\` (number, optional): Text size
-
----
-
-## Interaction
-
-### mouseIsPressed
-Boolean indicating if mouse is pressed.
-
-### mouseButton
-Which mouse button is pressed.
-
-### mouseX
-Current mouse X position.
-
-### mouseY
-Current mouse Y position.
-
-### pmouseX
-Previous mouse X position.
-
-### pmouseY
-Previous mouse Y position.
-
-### keyIsPressed
-Boolean indicating if any key is pressed.
-
-### key
-Current key pressed.
-
-### keyCode
-Key code of current key.
-
----
-
-## Math
-
-### abs(n)
-Returns absolute value.
-
-**Parameters:**
-- \`n\` (number): Number to process
-
-### floor(n)
-Returns floor value.
-
-**Parameters:**
-- \`n\` (number): Number to process
-
-### ceil(n)
-Returns ceiling value.
-
-**Parameters:**
-- \`n\` (number): Number to process
-
-### round(n)
-Returns rounded value.
-
-**Parameters:**
-- \`n\` (number): Number to process
-
-### min(...args)
-Returns minimum value.
-
-**Parameters:**
-- \`...\`args (number): Numbers to compare
-
-### max(...args)
-Returns maximum value.
-
-**Parameters:**
-- \`...\`args (number): Numbers to compare
-
----
-
-## Color
-
-### fill(...args)
-Sets the fill color.
-
-**Parameters:**
-- \`...\`args (number|string): Color values
-
-### noFill()
-Disables filling.
-
-### stroke(...args)
-Sets the stroke color.
-
-**Parameters:**
-- \`...\`args (number|string): Color values
-
-### noStroke()
-Disables stroke.
-
-### color(mode, ...values)
-Creates a color object.
-
-**Parameters:**
-- \`mode\` (string): Color mode ('rgb', 'hsb', 'hsl')
-- \`...\`values (number): Color values
-
----
-
-## Image
-
-### loadImage(path, callback?)
-Loads an image.
-
-**Parameters:**
-- \`path\` (string): Image path
-- \`callback\` (function, optional): Callback function
-
-### image(img, x, y, width?, height?)
-Displays an image.
-
-**Parameters:**
-- \`img\` (p5.Image): Image to display
-- \`x\` (number): X position
-- \`y\` (number): Y position
-- \`width\` (number, optional): Display width
-- \`height\` (number, optional): Display height
-
----
-
-## Shape
-
-### ellipse(x, y, width, height)
-Draws an ellipse.
-
-**Parameters:**
-- \`x\` (number): Center X
-- \`y\` (number): Center Y
-- \`width\` (number): Width
-- \`height\` (number): Height
-
-### circle(x, y, diameter)
-Draws a circle.
-
-**Parameters:**
-- \`x\` (number): Center X
-- \`y\` (number): Center Y
-- \`diameter\` (number): Diameter
-
-### rect(x, y, width, height, tl?, tr?, br?, bl?)
-Draws a rectangle.
-
-**Parameters:**
-- \`x\` (number): X position
-- \`y\` (number): Y position
-- \`width\` (number): Width
-- \`height\` (number): Height
-- \`tl\` (number, optional): Top-left radius
-- \`tr\` (number, optional): Top-right radius
-- \`br\` (number, optional): Bottom-right radius
-- \`bl\` (number, optional): Bottom-left radius
-
-### line(x1, y1, x2, y2)
-Draws a line.
-
-**Parameters:**
-- \`x1\` (number): Start X
-- \`y1\` (number): Start Y
-- \`x2\` (number): End X
-- \`y2\` (number): End Y
-
-### point(x, y)
-Draws a point.
-
-**Parameters:**
-- \`x\` (number): X position
-- \`y\` (number): Y position
-
----
-
-## Classes
-
-### p5
-Main p5 class.
-
-### p5.Vector
-Vector class for 2D/3D math.
-
-### p5.Color
-Color class for color management.
-
-### p5.Image
-Image class for image handling.
-
-### p5.Graphics
-Graphics class for offscreen rendering.
-
-### p5.Font
-Font class for typography.
-
----
-
-*This documentation was automatically generated from p5.js TypeScript definitions.*
-`;
-
-    const markdownFile = path.join(outputDir, 'p5.md');
-    fs.writeFileSync(markdownFile, docContent);
-    console.log(`✅ Comprehensive documentation written to: ${markdownFile}`);
-    console.log(`📊 Documentation size: ${docContent.length} characters`);
+  // Split content by module markers
+  const sections = typesContent.split(/\/\/ Inlined from: \.\/src\/([^\/]+)\/([^\/]+)\.d\.ts/);
+  
+  let currentModule = null;
+  let currentSubModule = null;
+  let currentContent = '';
+  
+  for (let i = 0; i < sections.length; i++) {
+    if (i % 3 === 1) {
+      // This is a module name
+      currentModule = sections[i];
+      if (!modules[currentModule]) {
+        modules[currentModule] = {
+          name: currentModule,
+          functions: [],
+          classes: [],
+          variables: [],
+          content: ''
+        };
+      }
+    } else if (i % 3 === 2) {
+      // This is a sub-module name
+      currentSubModule = sections[i];
+    } else if (i % 3 === 0) {
+      // This is content
+      if (currentModule && sections[i]) {
+        const content = sections[i].trim();
+        if (content) {
+          // Extract functions, classes, and variables from this section
+          extractAPIElements(content, modules[currentModule], currentSubModule);
+          modules[currentModule].content += content + '\n\n';
+        }
+      }
+    }
+  }
+  
+  return modules;
+}
+
+function extractAPIElements(content, module, subModule) {
+  // Extract functions
+  const functionMatches = content.match(/\/\*\*\s*\n[\s\S]*?\*\/\s*\n\s*(\w+)\s*\([^)]*\)\s*:\s*[^;]+;/g);
+  if (functionMatches) {
+    functionMatches.forEach(match => {
+      const nameMatch = match.match(/\s*(\w+)\s*\(/);
+      if (nameMatch) {
+        const docMatch = match.match(/\/\*\*\s*\n([\s\S]*?)\*\//);
+        const description = docMatch ? docMatch[1] : '';
+        
+        module.functions.push({
+          name: nameMatch[1],
+          description: cleanJSDoc(description),
+          subModule: subModule
+        });
+      }
+    });
+  }
+  
+  // Extract classes
+  const classMatches = content.match(/\/\*\*\s*\n[\s\S]*?\*\/\s*\n\s*(class|interface)\s+(\w+)/g);
+  if (classMatches) {
+    classMatches.forEach(match => {
+      const nameMatch = match.match(/(class|interface)\s+(\w+)/);
+      if (nameMatch) {
+        const docMatch = match.match(/\/\*\*\s*\n([\s\S]*?)\*\//);
+        const description = docMatch ? docMatch[1] : '';
+        
+        module.classes.push({
+          name: nameMatch[2],
+          type: nameMatch[1],
+          description: cleanJSDoc(description),
+          subModule: subModule
+        });
+      }
+    });
+  }
+  
+  // Extract variables/properties
+  const variableMatches = content.match(/\/\*\*\s*\n[\s\S]*?\*\/\s*\n\s*(\w+)\s*:\s*[^;]+;/g);
+  if (variableMatches) {
+    variableMatches.forEach(match => {
+      const nameMatch = match.match(/\s*(\w+)\s*:/);
+      if (nameMatch) {
+        const docMatch = match.match(/\/\*\*\s*\n([\s\S]*?)\*\//);
+        const description = docMatch ? docMatch[1] : '';
+        
+        module.variables.push({
+          name: nameMatch[1],
+          description: cleanJSDoc(description),
+          subModule: subModule
+        });
+      }
+    });
   }
 }
 
-function createSimpleVimDoc() {
-  console.log('📝 Creating simple Vim documentation format...');
+function cleanJSDoc(jsdoc) {
+  return jsdoc
+    .replace(/\/\*\*\s*\n/g, '')
+    .replace(/\s*\*\/\s*$/g, '')
+    .replace(/\n\s*\*\s?/g, '\n')
+    .replace(/@param\s+(\w+)\s*(.*)/g, '- **$1**: $2')
+    .replace(/@returns?\s*(.*)/g, '- **Returns**: $1')
+    .trim();
+}
+
+function generateModuleMarkdown(moduleName, moduleData, p5Version, timestamp) {
+  let markdown = `# ${moduleName.charAt(0).toUpperCase() + moduleName.slice(1)} Module
+
+**p5.js Version:** ${p5Version}  
+**Last Updated:** ${timestamp}
+
+---
+
+## Table of Contents
+
+`;
+
+  // Add TOC for functions
+  if (moduleData.functions.length > 0) {
+    markdown += '### Functions\n\n';
+    moduleData.functions.forEach(func => {
+      markdown += `- [${func.name}](#${func.name.toLowerCase()})\n`;
+    });
+    markdown += '\n';
+  }
+
+  // Add TOC for classes
+  if (moduleData.classes.length > 0) {
+    markdown += '### Classes\n\n';
+    moduleData.classes.forEach(cls => {
+      markdown += `- [${cls.name}](#${cls.name.toLowerCase()})\n`;
+    });
+    markdown += '\n';
+  }
+
+  // Add TOC for variables
+  if (moduleData.variables.length > 0) {
+    markdown += '### Variables\n\n';
+    moduleData.variables.forEach(variable => {
+      markdown += `- [${variable.name}](#${variable.name.toLowerCase()})\n`;
+    });
+    markdown += '\n';
+  }
+
+  markdown += '---\n\n';
+
+  // Add function documentation
+  if (moduleData.functions.length > 0) {
+    markdown += '## Functions\n\n';
+    moduleData.functions.forEach(func => {
+      markdown += `### ${func.name}\n\n`;
+      if (func.description) {
+        markdown += `${func.description}\n\n`;
+      }
+      if (func.subModule) {
+        markdown += `*Sub-module: ${func.subModule}*\n\n`;
+      }
+      markdown += '---\n\n';
+    });
+  }
+
+  // Add class documentation
+  if (moduleData.classes.length > 0) {
+    markdown += '## Classes\n\n';
+    moduleData.classes.forEach(cls => {
+      markdown += `### ${cls.name}\n\n`;
+      markdown += `**Type:** ${cls.type}\n\n`;
+      if (cls.description) {
+        markdown += `${cls.description}\n\n`;
+      }
+      if (cls.subModule) {
+        markdown += `*Sub-module: ${cls.subModule}*\n\n`;
+      }
+      markdown += '---\n\n';
+    });
+  }
+
+  // Add variable documentation
+  if (moduleData.variables.length > 0) {
+    markdown += '## Variables\n\n';
+    moduleData.variables.forEach(variable => {
+      markdown += `### ${variable.name}\n\n`;
+      if (variable.description) {
+        markdown += `${variable.description}\n\n`;
+      }
+      if (variable.subModule) {
+        markdown += `*Sub-module: ${variable.subModule}*\n\n`;
+      }
+      markdown += '---\n\n';
+    });
+  }
+
+  return markdown;
+}
+
+function removeInternalLinks(markdown) {
+  // Remove internal links like [text]() that would be broken
+  return markdown
+    .replace(/\[([^\]]+)\]\(\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'); // Also remove external links for cleaner docs
+}
+
+function convertToVimdoc(markdown, moduleName, p5Version, timestamp) {
+  const emoji = moduleEmojis[moduleName] || '📄';
+  const title = `p5-${moduleName}${emoji}`;
   
-  const markdownFile = path.join(outputDir, 'p5.md');
-  const vimdocFile = path.join(outputDir, 'p5.txt');
-  
-  if (fs.existsSync(markdownFile)) {
-    const markdownContent = fs.readFileSync(markdownFile, 'utf8');
-    
-    // Simple markdown to vimdoc conversion
-    let vimdocContent = `p5.txt    p5.js API Documentation    p5
+  // Convert markdown to Vimdoc format
+  let vimdoc = `${title}.txt    p5.js ${moduleName} documentation    p5
 
 ==============================================================================
-CONTENTS                                                    *p5-contents*
+p5.js ${moduleName.charAt(0).toUpperCase() + moduleName.slice(1)} Module    *p5-${moduleName}*
 
-${markdownContent}
+p5.js Version: ${p5Version}~
+Last Updated: ${timestamp}~
 
 ==============================================================================
+CONTENTS                                                    *p5-${moduleName}-contents*
+
+`;
+
+  // Convert markdown headers to Vimdoc
+  vimdoc = vimdoc.replace(/^# (.+)$/gm, '==============================================================================\n$1                                            *p5-${moduleName}-$1*\n');
+  vimdoc = vimdoc.replace(/^## (.+)$/gm, '\n$1~\n');
+  vimdoc = vimdoc.replace(/^### (.+)$/gm, '$1~\n');
+  
+  // Convert bold text
+  vimdoc = vimdoc.replace(/\*\*(.+?)\*\*/g, '$1');
+  
+  // Convert code blocks
+  vimdoc = vimdoc.replace(/```(\w+)?\n([\s\S]*?)```/g, '\n$2\n');
+  
+  // Convert inline code
+  vimdoc = vimdoc.replace(/`([^`]+)`/g, '$1');
+  
+  // Convert lists
+  vimdoc = vimdoc.replace(/^- (.+)$/gm, '    $1');
+  
+  // Convert horizontal rules
+  vimdoc = vimdoc.replace(/^---$/gm, '==============================================================================');
+  
+  // Add the rest of the content
+  const contentStart = markdown.indexOf('\n---\n\n## Table of Contents');
+  if (contentStart > -1) {
+    const content = markdown.substring(contentStart + 5);
+    vimdoc += content;
+  }
+  
+  vimdoc += `\n\n==============================================================================
 vim:tw=78:ts=8:ft=help:norl:
 `;
+  
+  return vimdoc;
+}
+
+function generateMasterIndex(modules, p5Version, timestamp) {
+  let index = `p5-index.txt    p5.js Complete Documentation Index    p5
+
+==============================================================================
+p5.js Complete Documentation Index                    *p5-index*
+
+p5.js Version: ${p5Version}~
+Last Updated: ${timestamp}~
+
+==============================================================================
+CONTENTS                                                    *p5-index-contents*
+
+Available Modules:
+`;
+
+  // Add module list with emojis
+  for (const [moduleName, moduleData] of Object.entries(modules)) {
+    const emoji = moduleEmojis[moduleName] || '📄';
+    const filename = `p5-${moduleName}${emoji}.txt`;
+    const functionCount = moduleData.functions.length;
+    const classCount = moduleData.classes.length;
+    const variableCount = moduleData.variables.length;
     
-    fs.writeFileSync(vimdocFile, vimdocContent);
-    console.log(`✅ Simple Vim documentation written to: ${vimdocFile}`);
+    index += `    ${emoji} ${moduleName.charAt(0).toUpperCase() + moduleName.slice(1)} (${filename})~`;
+    index += `        Functions: ${functionCount}, Classes: ${classCount}, Variables: ${variableCount}\n`;
   }
+
+  index += `\n==============================================================================
+Usage:\n\nTo view documentation for a specific module, use:\n>
+    :help p5-${Object.keys(modules).join(' | :help p5-')}\n<
+\n==============================================================================
+vim:tw=78:ts=8:ft=help:norl:
+`;
+
+  fs.writeFileSync(path.join(outputDir, 'p5-index.txt'), index);
+  console.log('✅ Generated master index: p5-index.txt');
 }

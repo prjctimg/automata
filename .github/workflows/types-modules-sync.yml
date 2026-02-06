@@ -113,8 +113,9 @@ jobs:
           fi
 
           # Copy generated modules if they exist
-          if [ -d "/home/runner/work/automata/automata/assets" ]; then
-            cp -r /home/runner/work/automata/automata/assets/* . || true
+          if [ -d "/home/runner/work/automata/automata/assets/libs" ]; then
+            mkdir -p assets/libs
+            cp -r /home/runner/work/automata/automata/assets/libs/* assets/libs/ || true
             echo "✅ Copied modules"
           fi
 
