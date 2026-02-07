@@ -120,9 +120,23 @@ jobs:
           git config user.name "iseeheaven"
           git config user.email "xml-wizard@outlook.com"
 
+          # Debug: Check what we're copying
+          echo "🔍 Debugging file copy process..."
+          echo "Source types directory: /home/runner/work/automata/automata/assets/types"
+          echo "Destination: $(pwd)/assets/types"
+          ls -la /home/runner/work/automata/automata/assets/types/ || echo "Source types directory not found"
+          ls -la assets/types/ || echo "Destination types directory not found"
+          
           # Add and commit changes
           git add .
-          git diff --staged --quiet || git commit -m "Update p5.js types and core modules ($(date +'%Y-%m-%d %H:%M:%S'))"
+          git status
+          git diff --cached --name-only
+          
+          if [ -n "$(git status --porcelain)" ]; then
+            git commit -m "Update p5.js types and core modules ($(date +'%Y-%m-%d %H:%M:%S'))"
+          else
+            echo "No changes to commit"
+          fi
           
           # Pull latest changes and push
           git pull origin main --rebase || true
