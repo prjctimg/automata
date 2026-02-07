@@ -100,7 +100,7 @@ try {
 function parseModulesFromTypes(typesContent) {
   const modules = {};
   
-  // Split content by module markers
+  // Split content by module markers with improved regex
   const sections = typesContent.split(/\/\/ Inlined from: \.\/src\/([^\/]+)\/([^\/]+)\.d\.ts/);
   
   let currentModule = null;
@@ -136,38 +136,81 @@ function parseModulesFromTypes(typesContent) {
     }
   }
   
+  // Final deduplication pass to ensure no duplicates across sections
+  for (const moduleName of Object.keys(modules)) {
+    const module = modules[moduleName];
+    
+    // Helper to deduplicate by name and keep the most complete entry
+    function deduplicateByBestEntry(arr) {
+      const seen = new Map();
+      return arr.filter(item => {
+        if (seen.has(item.name)) {
+          // Keep the entry with more complete description
+          const existing = seen.get(item.name);
+          if (item.description && item.description.length > (existing.description || '').length) {
+            seen.set(item.name, item);
+            return true;
+          }
+          return false;
+        }
+        seen.set(item.name, item);
+        return true;
+      });
+    }
+    
+    module.functions = deduplicateByBestEntry(module.functions);
+    module.classes = deduplicateByBestEntry(module.classes);
+    module.variables = deduplicateByBestEntry(module.variables);
+  }
+  
   return modules;
 }
 
 function extractAPIElements(content, module, subModule) {
-  // Extract functions
+  // Helper function to deduplicate array by name
+  function deduplicateByName(arr) {
+    const seen = new Set();
+    return arr.filter(item => {
+      if (seen.has(item.name)) {
+        return false;
+      }
+      seen.add(item.name);
+      return true;
+    });
+  }
+  
+  // Extract functions with improved regex to avoid duplicates
   const functionMatches = content.match(/\/\*\*\s*\n[\s\S]*?\*\/\s*\n\s*(\w+)\s*\([^)]*\)\s*:\s*[^;]+;/g);
   if (functionMatches) {
+    const functions = [];
     functionMatches.forEach(match => {
       const nameMatch = match.match(/\s*(\w+)\s*\(/);
       if (nameMatch) {
         const docMatch = match.match(/\/\*\*\s*\n([\s\S]*?)\*\//);
         const description = docMatch ? docMatch[1] : '';
         
-        module.functions.push({
+        functions.push({
           name: nameMatch[1],
           description: cleanJSDoc(description),
           subModule: subModule
         });
       }
     });
+    // Deduplicate and add to module
+    module.functions.push(...deduplicateByName(functions));
   }
   
-  // Extract classes
+  // Extract classes with improved regex to avoid duplicates
   const classMatches = content.match(/\/\*\*\s*\n[\s\S]*?\*\/\s*\n\s*(class|interface)\s+(\w+)/g);
   if (classMatches) {
+    const classes = [];
     classMatches.forEach(match => {
       const nameMatch = match.match(/(class|interface)\s+(\w+)/);
       if (nameMatch) {
         const docMatch = match.match(/\/\*\*\s*\n([\s\S]*?)\*\//);
         const description = docMatch ? docMatch[1] : '';
         
-        module.classes.push({
+        classes.push({
           name: nameMatch[2],
           type: nameMatch[1],
           description: cleanJSDoc(description),
@@ -175,24 +218,29 @@ function extractAPIElements(content, module, subModule) {
         });
       }
     });
+    // Deduplicate and add to module
+    module.classes.push(...deduplicateByName(classes));
   }
   
-  // Extract variables/properties
+  // Extract variables/properties with improved regex to avoid duplicates
   const variableMatches = content.match(/\/\*\*\s*\n[\s\S]*?\*\/\s*\n\s*(\w+)\s*:\s*[^;]+;/g);
   if (variableMatches) {
+    const variables = [];
     variableMatches.forEach(match => {
       const nameMatch = match.match(/\s*(\w+)\s*:/);
       if (nameMatch) {
         const docMatch = match.match(/\/\*\*\s*\n([\s\S]*?)\*\//);
         const description = docMatch ? docMatch[1] : '';
         
-        module.variables.push({
+        variables.push({
           name: nameMatch[1],
           description: cleanJSDoc(description),
           subModule: subModule
         });
       }
     });
+    // Deduplicate and add to module
+    module.variables.push(...deduplicateByName(variables));
   }
 }
 
@@ -346,22 +394,34 @@ CONTENTS                                                    *p5-index-contents*
 Available Modules:
 `;
 
-  // Add module list with emojis 📚
+  // Add module list with emojis 📚 and proper Vimdoc reference links
   for (const [moduleName, moduleData] of Object.entries(modules)) {
     const emoji = moduleEmojis[moduleName] || '📄';
-    const filename = `p5-${moduleName}.txt`;
     const functionCount = moduleData.functions.length;
     const classCount = moduleData.classes.length;
     const variableCount = moduleData.variables.length;
+    const linkTarget = `p5-${moduleName}`;
     
-    index += `    ${emoji} ${moduleName.charAt(0).toUpperCase() + moduleName.slice(1)} (${filename})~`;
+    index += `    ${emoji} ${moduleName.charAt(0).toUpperCase() + moduleName.slice(1)} |${linkTarget}|~`;
     index += `        🔧 Functions: ${functionCount}, 🏗️ Classes: ${classCount}, 📊 Variables: ${variableCount}\n`;
   }
 
   index += `\n==============================================================================
-Usage:\n\nTo view documentation for a specific module, use:\n>
+USAGE                                                        *p5-index-usage*
+
+To view documentation for a specific module, use:\n>
     :help p5-${Object.keys(modules).join(' | :help p5-')}\n<
-\n==============================================================================
+
+Or jump directly to a module:\n`;
+  
+  // Add direct jump links
+  for (const [moduleName, moduleData] of Object.entries(modules)) {
+    const emoji = moduleEmojis[moduleName] || '📄';
+    const linkTarget = `p5-${moduleName}`;
+    index += `    :help |${linkTarget}|    ${emoji} ${moduleName.charAt(0).toUpperCase() + moduleName.slice(1)}\n`;
+  }
+
+  index += `\n==============================================================================
 vim:tw=78:ts=8:ft=help:norl:
 `;
 

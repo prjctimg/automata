@@ -73,17 +73,15 @@ jobs:
           npm install
 
       - name: Install p5 types and @types/p5
-
         run: |
           echo "📦 Installing p5 types and @types/p5..."
           npm install @types/p5 dts-bundle
 
-      - name: Clone p5.js
+      - name: Install system dependencies for GitHub API
         run: |
-          echo "📥 Cloning p5.js repository..."
-          git clone --depth 1 https://github.com/processing/p5.js.git /tmp/p5.js
-
-
+          echo "📦 Installing system dependencies..."
+          sudo apt-get update
+          sudo apt-get install -y jq curl
 
       - name: Generate types and modules
         env:
@@ -91,9 +89,8 @@ jobs:
           P5_NVIM_TOKEN: ${{ secrets.P5NVIM_PUSH_TOKEN }}
         run: |
           echo "🚀 Starting types and modules generation..."
-          echo "🚀 Running both types and modules..."
-          node scripts/bundle-p5-types.js
-          node scripts/p5/fetch-modules.js --repo ${{ env.P5_REPO }}
+          ./scripts/p5/types.sh
+          ./scripts/p5/assets.sh
 
       - name: Clone p5.nvim repository
         run: |
@@ -126,9 +123,11 @@ jobs:
           # Add and commit changes
           git add .
           git diff --staged --quiet || git commit -m "Update p5.js types and core modules ($(date +'%Y-%m-%d %H:%M:%S'))"
-
-          # Push changes
-          git push origin main
+          
+          # Pull latest changes and push
+          git pull origin main --rebase || true
+          git pull origin main --rebase || true
+          git push origin main --force-with-lease --force-with-lease
 
       - name: Upload types
         if: always()
@@ -150,14 +149,14 @@ jobs:
           
           if [ -d "/home/runner/work/automata/automata/assets/types" ]; then
             echo "- ✅ Generated TypeScript definitions" >> $GITHUB_STEP_SUMMARY
-            echo "  - index.d.ts (bundled p5 types in assets/types/)" >> $GITHUB_STEP_SUMMARY
+            echo "  - p5.d.ts (bundled p5 types in assets/types/)" >> $GITHUB_STEP_SUMMARY
             echo "  - Includes globals and p5 namespace support" >> $GITHUB_STEP_SUMMARY
           fi
           
           if [ -d "/home/runner/work/automata/automata/assets" ]; then
             echo "- ✅ Generated core modules" >> $GITHUB_STEP_SUMMARY
-            echo "  - Non-minified p5.js modules in assets/modules/" >> $GITHUB_STEP_SUMMARY
-            echo "  - Module index (modules.js)" >> $GITHUB_STEP_SUMMARY
+            echo "  - Non-minified p5.js modules in assets/libs/" >> $GITHUB_STEP_SUMMARY
+            echo "  - Latest releases from GitHub" >> $GITHUB_STEP_SUMMARY
           fi
           
           echo "- ✅ Updated p5.nvim repository" >> $GITHUB_STEP_SUMMARY
@@ -191,7 +190,6 @@ jobs:
           npm install
 
       - name: Install p5 types and @types/p5
-
         run: |
           echo "📦 Installing p5 types and @types/p5..."
           npm install @types/p5 dts-bundle
@@ -207,7 +205,7 @@ jobs:
           P5_NVIM_TOKEN: ${{ secrets.P5NVIM_PUSH_TOKEN }}
         run: |
           echo "🚀 Starting documentation generation..."
-          node src/index.js --skip-types --skip-modules
+          ./scripts/p5/docs.sh
 
       - name: Clone p5.nvim repository
         run: |
@@ -232,7 +230,8 @@ jobs:
           git diff --staged --quiet || git commit -m "Update p5.js documentation ($(date +'%Y-%m-%d %H:%M:%S'))"
 
           # Push changes
-          git push origin main
+          git pull origin main --rebase || true
+          git push origin main --force-with-lease
 
       - name: Upload docs
         if: always()

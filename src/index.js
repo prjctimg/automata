@@ -18,21 +18,21 @@ try {
   if (!skipTypes) {
     console.log('📝 Generating types...');
     const { execSync } = require('child_process');
-    execSync('node scripts/bundle-p5-types.js', { stdio: 'inherit' });
+    execSync('./scripts/p5/types.sh', { stdio: 'inherit' });
   }
 
   // Generate modules if not skipped
   if (!skipModules) {
     console.log('📦 Generating modules...');
     const { execSync } = require('child_process');
-    execSync('node scripts/p5/fetch-modules.js', { stdio: 'inherit' });
+    execSync('./scripts/p5/assets.sh', { stdio: 'inherit' });
   }
 
   // Generate docs if not skipped
   if (!skipDocs) {
     console.log('📖 Generating documentation...');
     const { execSync } = require('child_process');
-    execSync('node scripts/p5/docs.js', { stdio: 'inherit' });
+    execSync('./scripts/p5/docs.sh', { stdio: 'inherit' });
   }
 
   console.log('✅ All tasks completed successfully!');
