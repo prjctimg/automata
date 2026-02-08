@@ -127,23 +127,38 @@ jobs:
           ls -la /home/runner/work/automata/automata/assets/types/ || echo "Source types directory not found"
           ls -la assets/types/ || echo "Destination types directory not found"
           
-          # Add and commit changes
-          git add .
+          # Force add assets directories to ensure they're tracked
+          if [ -d "assets/types" ]; then
+            git add assets/types/
+            echo "✅ Added assets/types to git"
+          fi
+          if [ -d "assets/libs" ]; then
+            git add assets/libs/
+            echo "✅ Added assets/libs to git"
+          fi
+          
           git status
           git diff --cached --name-only
           
-          # Force commit if we copied files (even if identical)
+          # Always commit if we have assets directories
           if [ -d "assets/types" ] || [ -d "assets/libs" ]; then
-            if [ -n "$(git status --porcelain)" ]; then
+            # Create a commit even if git thinks there are no changes (files might be identical)
+            if [ -n "$(git diff --cached --name-only)" ]; then
               git commit -m "Update p5.js types and core modules ($(date +'%Y-%m-%d %H:%M:%S'))"
               echo "✅ Committed changes"
             else
-              # Force commit with timestamp to ensure update
-              echo "📝 Forcing commit with timestamp..."
+              # Force commit by touching a file to ensure there's a change
+              echo "📝 Ensuring commit with timestamp..."
               echo "Updated at $(date -Iseconds)" > assets/.last_update
               git add assets/.last_update
-              git commit -m "Force update p5.js types and modules ($(date +'%Y-%m-%d %H:%M:%S'))"
-              echo "✅ Forced commit completed"
+              if [ -d "assets/types" ]; then
+                git add assets/types/
+              fi
+              if [ -d "assets/libs" ]; then
+                git add assets/libs/
+              fi
+              git commit -m "Update p5.js types and core modules ($(date +'%Y-%m-%d %H:%M:%S'))"
+              echo "✅ Forced commit completed with assets"
             fi
           else
             echo "❌ No assets directories found"
