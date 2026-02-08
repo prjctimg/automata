@@ -11,6 +11,10 @@ ASSETS_DIR="assets"
 mkdir -p "$OUTPUT_DIR"
 mkdir -p "$ASSETS_DIR"
 
+# Clean up existing documentation files
+echo "🧹 Cleaning up existing documentation..."
+rm -f "$OUTPUT_DIR"/p5-*.txt "$OUTPUT_DIR"/p5.md
+
 echo "📖 Extracting documentation from @types/p5... 🔍📦"
 
 # Get p5 version from package.json
@@ -28,7 +32,7 @@ if [ ! -f "$TYPES_FILE" ]; then
 fi
 
 echo "📝 Generating documentation for all modules..."
-if node scripts/p5/docs.js; then
+if node scripts/bundle-p5-docs.js; then
 	echo "✅ Documentation generation successful"
 else
 	echo "❌ Documentation generation failed"

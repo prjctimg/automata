@@ -29,9 +29,12 @@ function resolveReferences(content, basePath) {
         // Recursively resolve nested references
         const resolvedRefContent = resolveReferences(refContent, path.dirname(fullRefPath));
         
-        // Fix module declarations that might have incorrect paths
-        let cleanedRefContent = resolvedRefContent.replace(/declare module '[^']*'/g, '// Module declaration removed');
-        cleanedRefContent = cleanedRefContent.replace(/import p5 = require\("\.\.\/[^"]*"\);?/g, '');
+        // Clean up module declarations and imports, but keep type definitions
+        let cleanedRefContent = resolvedRefContent
+          .replace(/declare module '[^']*'/g, '// Module declaration removed')
+          .replace(/import p5 = require\("\.\.\/[^"]*"\);?/g, '')
+          .replace(/export\s*\{[^}]*\}/g, '// Export removed')
+          .replace(/export\s+default\s+[^;]*;/g, '// Default export removed');
         
         resolvedContent = resolvedContent.replace(match[0], `// Inlined from: ${refPath}\n${cleanedRefContent}`);
         processedFiles.add(fullRefPath);
@@ -43,6 +46,27 @@ function resolveReferences(content, basePath) {
   }
   
   return resolvedContent;
+}
+
+function extractAndInlineTypes(content) {
+  // Extract all type definitions and ensure they're available globally
+  const typeDefinitions = new Set();
+  
+  // Find all type declarations
+  const typeRegex = /(?:type|interface|enum|const)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[=:{]/g;
+  let match;
+  
+  while ((match = typeRegex.exec(content)) !== null) {
+    typeDefinitions.add(match[1]);
+  }
+  
+  // Find all constant declarations that might be types
+  const constRegex = /declare\s+const\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g;
+  while ((match = constRegex.exec(content)) !== null) {
+    typeDefinitions.add(match[1]);
+  }
+  
+  return content;
 }
 
 try {
@@ -60,8 +84,24 @@ try {
   const globalPath = 'node_modules/@types/p5/global.d.ts';
   const globalContent = fs.readFileSync(globalPath, 'utf8');
   
-  // Step 3: Remove the global import from index.d.ts since we'll handle it separately
-  const cleanIndexContent = resolvedIndexContent.replace(/import\s+p5\s*=\s*require\("\.\/index"\);?/, '');
+  // Step 3: Process and clean the content to ensure all types are properly inlined
+  console.log('🧹 Cleaning and processing type definitions...');
+  
+  // Remove module declarations and imports that could cause conflicts
+  let cleanIndexContent = resolvedIndexContent
+    .replace(/import\s+p5\s*=\s*require\("\.\/index"\);?/g, '')
+    .replace(/declare module ['"][^'"]*['"]/g, '// Module declaration removed')
+    .replace(/export\s*\{[^}]*\}/g, '// Export removed')
+    .replace(/export\s+default\s+[^;]*;/g, '// Default export removed');
+  
+  let cleanGlobalContent = globalContent
+    .replace(/declare module ['"][^'"]*['"]/g, '// Module declaration removed')
+    .replace(/export\s*\{[^}]*\}/g, '// Export removed')
+    .replace(/export\s+default\s+[^;]*;/g, '// Default export removed');
+  
+  // Extract and inline all type definitions
+  cleanIndexContent = extractAndInlineTypes(cleanIndexContent);
+  cleanGlobalContent = extractAndInlineTypes(cleanGlobalContent);
   
   // Step 4: Create combined output with both global and namespace support
   console.log('🔗 Combining global and namespace types... 🔗🎯');
@@ -70,6 +110,19 @@ try {
 // This file provides both global and p5 namespace support
 // Generated: ${new Date().toISOString()}
 // Original source: @types/p5 package
+
+// ============================================================================
+// BASIC TYPE DEFINITIONS
+// Ensure all fundamental types are available globally
+// ============================================================================
+type DEGREES = 'degrees';
+type RADIANS = 'radians';
+type LABEL = 'label';
+type FALLBACK = 'fallback';
+type ANGLE_MODE = RADIANS | DEGREES;
+type DESCRIBE_DISPLAY = LABEL | FALLBACK;
+type GRID_DISPLAY = FALLBACK | LABEL;
+type TEXT_DISPLAY = FALLBACK | LABEL;
 
 // ============================================================================
 // P5 NAMESPACE SUPPORT
@@ -81,14 +134,12 @@ ${cleanIndexContent}
 // GLOBAL SUPPORT  
 // Use: createCanvas(400, 300); // directly available in global scope
 // ============================================================================
-${globalContent}
+${cleanGlobalContent}
 
 // ============================================================================
 // DUAL EXPORT SUPPORT
 // Supports both import styles for maximum compatibility
 // ============================================================================
-export * from './index';
-export * from './global';
 export as namespace p5;
 export = p5;
 `;

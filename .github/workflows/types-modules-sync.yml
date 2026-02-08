@@ -132,10 +132,21 @@ jobs:
           git status
           git diff --cached --name-only
           
-          if [ -n "$(git status --porcelain)" ]; then
-            git commit -m "Update p5.js types and core modules ($(date +'%Y-%m-%d %H:%M:%S'))"
+          # Force commit if we copied files (even if identical)
+          if [ -d "assets/types" ] || [ -d "assets/libs" ]; then
+            if [ -n "$(git status --porcelain)" ]; then
+              git commit -m "Update p5.js types and core modules ($(date +'%Y-%m-%d %H:%M:%S'))"
+              echo "✅ Committed changes"
+            else
+              # Force commit with timestamp to ensure update
+              echo "📝 Forcing commit with timestamp..."
+              echo "Updated at $(date -Iseconds)" > assets/.last_update
+              git add assets/.last_update
+              git commit -m "Force update p5.js types and modules ($(date +'%Y-%m-%d %H:%M:%S'))"
+              echo "✅ Forced commit completed"
+            fi
           else
-            echo "No changes to commit"
+            echo "❌ No assets directories found"
           fi
           
           # Pull latest changes and push
