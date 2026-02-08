@@ -118,7 +118,7 @@ jobs:
 
           # Configure git
           git config user.name "iseeheaven"
-          git config user.email "xml-wizard@outlook.com"
+          git config user.email "iseeheaven@outlook.com"
 
           # Debug: Check what we're copying
           echo "🔍 Debugging file copy process..."
@@ -270,7 +270,7 @@ jobs:
 
           # Configure git
           git config user.name "iseeheaven"
-          git config user.email "xml-wizard@outlook.com"
+          git config user.email "iseeheaven@outlook.com"
 
           # Add and commit changes
           git add doc/
