@@ -32,7 +32,7 @@ if [ ! -f "$TYPES_FILE" ]; then
 fi
 
 echo "📝 Generating documentation for all modules..."
-if node scripts/bundle-p5-docs.js; then
+if node scripts/p5/docs.js; then
 	echo "✅ Documentation generation successful"
 else
 	echo "❌ Documentation generation failed"
