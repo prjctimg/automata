@@ -195,6 +195,7 @@ jobs:
   generate-docs:
     runs-on: ubuntu-latest
     name: Generate Documentation
+    needs: generate-types-and-modules
     
     permissions:
       contents: write
@@ -218,6 +219,12 @@ jobs:
         run: |
           echo "📦 Installing p5 types and @types/p5..."
           npm install @types/p5 dts-bundle
+
+      - name: Download types artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: p5-types
+          path: assets/types/
 
       - name: Clone p5.js
         run: |
