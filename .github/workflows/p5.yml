@@ -1,4 +1,4 @@
-name: p5.js Documentation Sync
+name: p5.js manpages
 
 on:
   release:
@@ -63,10 +63,9 @@ jobs:
           # Copy generated docs
           cp -r /home/runner/work/automata/automata/doc/* doc/ || true
 
-          # Configure git
-          git config user.name "iseeheaven"
-          git config user.email "xml-wizard@outlook.com"
 
+          git config user.name "gh-actions"
+          git config user.email "actions@github.com"
           # Add and commit changes
           git add doc/
           git diff --staged --quiet || git commit -m "docs: updated manpages"

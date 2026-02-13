@@ -1,11 +1,11 @@
-name: p5.js Types and Modules Sync
+name: p5.js assets.
 
 on:
   release:
     types: [published]
   schedule:
     # Run daily at 2 AM UTC to check for type updates
-    - cron: '0 2 * * *'
+    - cron: "0 2 * * *"
   workflow_dispatch:
 
 env:
@@ -17,10 +17,10 @@ jobs:
     runs-on: ubuntu-latest
     name: Check for Updates
     if: github.event_name == 'schedule'
-    
+
     permissions:
       contents: read
-    
+
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
       p5_version: ${{ steps.check.outputs.p5_version }}
@@ -31,14 +31,14 @@ jobs:
         id: check
         run: |
           echo "Checking for new p5.js releases..."
-          
+
           # Get latest p5.js release
           P5_LATEST=$(curl -s https://api.github.com/repos/processing/p5.js/releases/latest | jq -r .tag_name)
           echo "p5_latest=$P5_LATEST" >> $GITHUB_OUTPUT
-          
+
           # Get latest p5.nvim commit (to track if we've already processed this version)
           curl -s https://api.github.com/repos/prjctimg/p5.nvim/commits/main | jq -r .sha > p5nvim_latest.txt
-          
+
           # Simple check - if we have a new release, we should run
           if [ -n "$P5_LATEST" ]; then
             echo "Found p5.js version: $P5_LATEST"
@@ -126,7 +126,7 @@ jobs:
           echo "Destination: $(pwd)/assets/types"
           ls -la /home/runner/work/automata/automata/assets/types/ || echo "Source types directory not found"
           ls -la assets/types/ || echo "Destination types directory not found"
-          
+
           # Force add assets directories to ensure they're tracked
           if [ -d "assets/types" ]; then
             git add -f assets/types/
@@ -136,15 +136,15 @@ jobs:
             git add -f assets/libs/
             echo "✅ Added assets/libs to git"
           fi
-          
+
           git status
           git diff --cached --name-only
-          
+
           # Always commit if we have assets directories
           if [ -d "assets/types" ] || [ -d "assets/libs" ]; then
             # Create a commit even if git thinks there are no changes (files might be identical)
             if [ -n "$(git diff --cached --name-only)" ]; then
-              git commit -m "Update p5.js types and core modules ($(date +'%Y-%m-%d %H:%M:%S'))"
+              git commit -m "ci: updated p5 core modules and types"
               echo "✅ Committed changes"
             else
               # Force commit by touching a file to ensure there's a change
@@ -157,13 +157,13 @@ jobs:
               if [ -d "assets/libs" ]; then
                 git add -f assets/libs/
               fi
-              git commit -m "Update p5.js types and core modules ($(date +'%Y-%m-%d %H:%M:%S'))"
+              git commit -m "ci: updated p5 core modules and types"
               echo "✅ Forced commit completed with assets"
             fi
           else
             echo "❌ No assets directories found"
           fi
-          
+
           # Pull latest changes and push
           git pull origin main --rebase || true
           git pull origin main --rebase || true
@@ -186,22 +186,22 @@ jobs:
       - name: Summary
         run: |
           echo "## Types and Modules Generation Complete 🎉" >> $GITHUB_STEP_SUMMARY
-          
+
           if [ -d "/home/runner/work/automata/automata/assets/types" ]; then
             echo "- ✅ Generated TypeScript definitions" >> $GITHUB_STEP_SUMMARY
             echo "  - p5.d.ts (bundled p5 types in assets/types/)" >> $GITHUB_STEP_SUMMARY
             echo "  - Includes globals and p5 namespace support" >> $GITHUB_STEP_SUMMARY
           fi
-          
+
           if [ -d "/home/runner/work/automata/automata/assets" ]; then
             echo "- ✅ Generated core modules" >> $GITHUB_STEP_SUMMARY
             echo "  - Non-minified p5.js modules in assets/libs/" >> $GITHUB_STEP_SUMMARY
             echo "  - Latest releases from GitHub" >> $GITHUB_STEP_SUMMARY
           fi
-          
+
           echo "- ✅ Updated p5.nvim repository" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ All files are available in the artifacts" >> $GITHUB_STEP_SUMMARY
-          
+
           if [ "${{ needs.check-updates.outputs.p5_version }}" != "" ]; then
             echo "- 📦 p5.js version: ${{ needs.check-updates.outputs.p5_version }}" >> $GITHUB_STEP_SUMMARY
           fi
@@ -211,7 +211,7 @@ jobs:
     runs-on: ubuntu-latest
     name: Generate Documentation
     needs: generate-types-and-modules
-    
+
     permissions:
       contents: write
       pull-requests: write
@@ -286,3 +286,4 @@ jobs:
         with:
           name: p5-documentation
           path: doc/
+
