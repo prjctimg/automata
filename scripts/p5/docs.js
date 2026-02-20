@@ -75,6 +75,61 @@ const moduleEmojis = {
   'webgl': '🎮'
 };
 
+// Helper function to parse JSDoc block and extract metadata
+function parseJsdocBlock(jsdocContent, name, subCategory) {
+  // Extract description - everything before @param, @return, or @returns
+  let description = '';
+  const returnsMatch = jsdocContent.match(/@returns\s+/);
+  const returnMatch = jsdocContent.match(/@return\s+/);
+  const paramMatch = jsdocContent.match(/@param\s+/);
+  
+  let earliestMatch = null;
+  if (paramMatch) earliestMatch = paramMatch;
+  if (returnsMatch && (!earliestMatch || returnsMatch.index < earliestMatch.index)) earliestMatch = returnsMatch;
+  if (returnMatch && (!earliestMatch || returnMatch.index < earliestMatch.index)) earliestMatch = returnMatch;
+  
+  if (earliestMatch) {
+    description = jsdocContent.substring(0, earliestMatch.index).trim();
+  } else {
+    description = jsdocContent.trim();
+  }
+  
+  // Clean the description
+  description = cleanJsdocText(description);
+  
+  // Extract all params - handle multi-line descriptions
+  const params = [];
+  const paramRegex = /@param\s+(\w+)\s+(.+?)(?=\n\s*\*\s*@param|\n\s*\*\s*@return|\n\s*\*\s*@returns|\n\s*\*\/)/gs;
+  let pMatch;
+  while ((pMatch = paramRegex.exec(jsdocContent)) !== null) {
+    // Clean the description (remove newlines and extra asterisks)
+    let paramDesc = pMatch[2].replace(/\n\s+\*/g, ' ').trim();
+    params.push({
+      name: pMatch[1],
+      description: cleanJsdocText(paramDesc)
+    });
+  }
+  
+  // Extract return value - handle both @return and @returns
+  let returns = 'void';
+  const returnsContentMatch = jsdocContent.match(/@returns\s+(.+?)(?=\n\s*\*\s*@|\n\s*\*\/)/);
+  const returnContentMatch = jsdocContent.match(/@return\s+(.+?)(?=\n\s*\*\s*@|\n\s*\*\/)/);
+  
+  if (returnsContentMatch) {
+    returns = cleanJsdocText(returnsContentMatch[1]);
+  } else if (returnContentMatch) {
+    returns = cleanJsdocText(returnContentMatch[1]);
+  }
+  
+  return {
+    name: name,
+    description: description,
+    params: params,
+    returns: returns,
+    subModule: subCategory
+  };
+}
+
 // Helper function to create Vimdoc format with emojis
 function createVimdocContent(moduleName, functions, p5Version, timestamp) {
   const emoji = moduleEmojis[moduleName] || '📚';
@@ -87,14 +142,14 @@ function createVimdocContent(moduleName, functions, p5Version, timestamp) {
   // Create function documentation with proper structure
   const functionDocs = functions.map(func => {
     // Clean description
-    const cleanDesc = cleanJsdocText(func.description);
+    const cleanDesc = func.description || '';
     const wrappedDesc = wrapText(cleanDesc);
     
     // Only show params section if there are params
     let paramsSection = '';
     if (func.params && func.params.length > 0) {
       const paramsList = func.params.map(p => {
-        const cleanParamDesc = cleanJsdocText(p.description);
+        const cleanParamDesc = p.description || '';
         return `    ${p.name}  ${cleanParamDesc}`;
       }).join('\n');
       paramsSection = `
@@ -105,7 +160,7 @@ ${paramsList}
     }
     
     // Clean return
-    const cleanReturn = cleanJsdocText(func.returns);
+    const cleanReturn = func.returns || 'void';
     
     return `
 \`${func.name}()\`                                            |p5-${moduleName}-${func.name}|
@@ -170,57 +225,17 @@ function extractDocumentation() {
   while ((match = moduleRegex.exec(content)) !== null) {
     const [, mainCategory, subCategory, moduleContent] = match;
     
-    // Extract function documentation - improved regex to handle multi-line JSDoc
+    // Extract function documentation
     const functionDocs = [];
     
     // Match JSDoc comments with their function declarations
-    // This regex handles the actual format: /** ... */ followed by function name
     const funcRegex = /\/\*\*([\s\S]*?)\*\/\s*\n\s*(?:export\s+)?function\s+(\w+)\s*\([^)]*\)\s*[:;]/g;
     
     let funcMatch;
     while ((funcMatch = funcRegex.exec(moduleContent)) !== null) {
       const [, jsdocContent, functionName] = funcMatch;
-      
-      // Extract description - everything before @param or @return
-      let description = '';
-      const descMatch = jsdocContent.match(/@param|@return/);
-      if (descMatch) {
-        const descEndIndex = jsdocContent.indexOf(descMatch[0]);
-        description = jsdocContent.substring(0, descEndIndex).trim();
-      } else {
-        description = jsdocContent.trim();
-      }
-      
-// Clean the description
-      description = cleanJsdocText(description);
-      
-      // Extract all params - improved regex to handle multi-line descriptions
-      const params = [];
-      const paramRegex = /@param\s+(\w+)\s+(.+?)(?=\n\s*\*\s*@param|\n\s*\*\s*@return|\n\s*\*\/)/gs;
-      let paramMatch;
-      while ((paramMatch = paramRegex.exec(jsdocContent)) !== null) {
-        // Clean the description (remove newlines and extra asterisks)
-        let paramDesc = paramMatch[2].replace(/\n\s+\*/g, ' ').trim();
-        params.push({
-          name: paramMatch[1],
-          description: cleanJsdocText(paramDesc)
-        });
-      }
-      
-      // Extract return value
-      let returns = 'void';
-      const returnMatch = jsdocContent.match(/@return\s+(.+?)(?=\n\s*\*\s*@|\n\s*\*\/)/);
-      if (returnMatch) {
-        returns = cleanJsdocText(returnMatch[1]);
-      }
-      
-      functionDocs.push({
-        name: functionName,
-        description: description,
-        params: params,
-        returns: returns,
-        subModule: subCategory
-      });
+      const parsed = parseJsdocBlock(jsdocContent, functionName, subCategory);
+      functionDocs.push(parsed);
     }
     
     // Also match method declarations (not just exported functions)
@@ -232,46 +247,8 @@ function extractDocumentation() {
       const [, jsdocContent, methodName] = methodMatch;
       if (functionDocs.some(f => f.name === methodName)) continue;
       
-      // Extract description
-      let description = '';
-      const descMatch = jsdocContent.match(/@param|@return/);
-      if (descMatch) {
-        const descEndIndex = jsdocContent.indexOf(descMatch[0]);
-        description = jsdocContent.substring(0, descEndIndex).trim();
-      } else {
-        description = jsdocContent.trim();
-      }
-      
-      // Clean the description
-      description = cleanJsdocText(description);
-      
-      // Extract all params - improved regex to handle multi-line descriptions
-      const params = [];
-      const methodParamRegex = /@param\s+(\w+)\s+(.+?)(?=\n\s*\*\s*@param|\n\s*\*\s*@return|\n\s*\*\/)/gs;
-      let paramMatch;
-      while ((paramMatch = methodParamRegex.exec(jsdocContent)) !== null) {
-        // Clean the description (remove newlines and extra asterisks)
-        let paramDesc = paramMatch[2].replace(/\n\s+\*/g, ' ').trim();
-        params.push({
-          name: paramMatch[1],
-          description: cleanJsdocText(paramDesc)
-        });
-      }
-      
-      // Extract return value
-      let returns = 'void';
-      const returnMatch = jsdocContent.match(/@return\s+(.+?)(?=\n\s*\*\s*@|\n\s*\*\/)/);
-      if (returnMatch) {
-        returns = cleanJsdocText(returnMatch[1]);
-      }
-      
-      functionDocs.push({
-        name: methodName,
-        description: description,
-        params: params,
-        returns: returns,
-        subModule: subCategory
-      });
+      const parsed = parseJsdocBlock(jsdocContent, methodName, subCategory);
+      functionDocs.push(parsed);
     }
     
     // Group by main category (e.g., color, core, accessibility)
