@@ -92,6 +92,12 @@ jobs:
           ./scripts/p5/types.sh
           ./scripts/p5/assets.sh
 
+      - name: Copy static assets
+        run: |
+          echo "📦 Copying static assets..."
+          mkdir -p assets/static
+          cp static/favicon.ico assets/static/ || true
+
       - name: Clone p5.nvim repository
         run: |
           echo "📥 Cloning p5.nvim repository..."
@@ -114,6 +120,13 @@ jobs:
             mkdir -p assets/libs
             cp -r /home/runner/work/automata/automata/assets/libs/* assets/libs/ || true
             echo "✅ Copied modules"
+          fi
+
+          # Copy static assets if they exist
+          if [ -d "/home/runner/work/automata/automata/assets/static" ]; then
+            mkdir -p assets/static
+            cp -r /home/runner/work/automata/automata/assets/static/* assets/static/ || true
+            echo "✅ Copied static assets"
           fi
 
           # Configure git
