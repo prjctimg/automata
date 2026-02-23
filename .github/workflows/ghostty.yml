@@ -27,7 +27,7 @@ jobs:
 
       - name: Build for aarch64-linux
         run: |
-          nix build github:ghostty-org/ghostty#packages.aarch64_linux.ghostty --accept-flake-config
+          nix build github:ghostty-org/ghostty#ghostty --accept-flake-config
 
       - name: Package binary
         run: |
