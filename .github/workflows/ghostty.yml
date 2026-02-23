@@ -27,10 +27,11 @@ jobs:
 
       - name: Install Linux dependencies
         run: |
+          sudo dpkg --add-architecture arm64
           sudo apt-get update
           sudo apt-get install -y \
-            libgtk-4-dev \
-            libadwaita-1-dev \
+            libgtk-4-dev:arm64 \
+            libadwaita-1-dev:arm64 \
             gettext \
             libxml2-utils \
             pkg-config \
@@ -75,14 +76,16 @@ jobs:
 
       - name: Install Linux dependencies
         run: |
+          sudo dpkg --add-architecture arm64
           sudo apt-get update
           sudo apt-get install -y \
-            libgtk-4-dev \
-            libadwaita-1-dev \
+            libgtk-4-dev:arm64 \
+            libadwaita-1-dev:arm64 \
             gettext \
             libxml2-utils \
             pkg-config \
-            musl-tools
+            musl-tools \
+            musl-gcc
 
       - name: Download Ghostty source
         run: |
