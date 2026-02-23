@@ -1,4 +1,4 @@
-name: Build Ghostty ARM64 (musl)
+name: Build Ghostty ARM64
 
 on:
   push:
@@ -12,7 +12,7 @@ env:
   GHOSTTY_VERSION: "tip"
 
 jobs:
-  build-aarch64-musl:
+  build-aarch64:
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout
@@ -25,24 +25,24 @@ jobs:
             substituters = https://ghostty.cachix.org
             trusted-public-keys = ghostty.cachix.org-1:QB389yTa6gTyneehvqG58y0WnHjQOqgnA+wBnpWWxns=
 
-      - name: Build for aarch64-linux-musl
+      - name: Build for aarch64-linux
         run: |
-          nix build github:ghostty-org/ghostty#packages.aarch64_linux_musl.ghostty --accept-flake-config
+          nix build github:ghostty-org/ghostty#packages.aarch64_linux.ghostty --accept-flake-config
 
       - name: Package binary
         run: |
           mkdir -p release
-          cp result/bin/ghostty release/ghostty-${{ env.GHOSTTY_VERSION }}-linux-aarch64-musl
-          chmod +x release/ghostty-${{ env.GHOSTTY_VERSION }}-linux-aarch64-musl
+          cp result/bin/ghostty release/ghostty-${{ env.GHOSTTY_VERSION }}-linux-aarch64
+          chmod +x release/ghostty-${{ env.GHOSTTY_VERSION }}-linux-aarch64
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ghostty-aarch64-musl
-          path: release/ghostty-*-linux-aarch64-musl
+          name: ghostty-aarch64
+          path: release/ghostty-*-linux-aarch64
 
   release:
-    needs: build-aarch64-musl
+    needs: build-aarch64
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -56,11 +56,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: Ghostty ${{ env.GHOSTTY_VERSION }} ARM64 (musl)
+          name: Ghostty ${{ env.GHOSTTY_VERSION }} ARM64
           draft: false
           prerelease: false
           generate_release_notes: true
           files: |
-            artifacts/ghostty-aarch64-musl/ghostty-*-linux-aarch64-musl
+            artifacts/ghostty-aarch64/ghostty-*-linux-aarch64
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
