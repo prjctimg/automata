@@ -44,7 +44,7 @@ jobs:
       - name: Build for x86_64-linux
         working-directory: ${{ env.GHOSTTY_DIR }}
         run: |
-          zig build -Doptimize=ReleaseFast -Dtarget=x86_64-linux-gnu -fno-sys=gtk4-layer-shell
+          zig build -Doptimize=ReleaseFast -fno-sys=gtk4-layer-shell
 
       - name: Package binary
         working-directory: ${{ env.GHOSTTY_DIR }}
