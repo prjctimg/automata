@@ -21,13 +21,13 @@ jobs:
       - name: Install Nix
         uses: cachix/install-nix-action@v26
         with:
-          extra_nix_config: |
+          nix_config: |
             substituters = https://ghostty.cachix.org
             trusted-public-keys = ghostty.cachix.org-1:QB389yTa6gTyneehvqG58y0WnHjQOqgnA+wBnpWWxns=
 
       - name: Build for aarch64-linux-musl
         run: |
-          nix build github:ghostty-org/ghostty#packages.aarch64-linux-musl.ghostty
+          nix build github:ghostty-org/ghostty#packages.aarch64-linux-musl.ghostty --accept-flake-config
 
       - name: Package binary
         run: |
