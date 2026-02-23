@@ -40,7 +40,7 @@ jobs:
 
       - name: Download Ghostty source
         run: |
-          wget -q https://github.com/ghostty-org/ghostty/releases/download/${{ env.GHOSTTY_TAG }}/ghostty-source.tar.gz
+          curl -sL https://github.com/ghostty-org/ghostty/releases/download/${{ env.GHOSTTY_TAG }}/ghostty-source.tar.gz -o ghostty-source.tar.gz
           tar -xf ghostty-source.tar.gz
           echo "GHOSTTY_DIR=$(ls -d ghostty-*/)" >> $GITHUB_ENV
 
@@ -87,7 +87,7 @@ jobs:
 
       - name: Download Ghostty source
         run: |
-          wget -q https://github.com/ghostty-org/ghostty/releases/download/${{ env.GHOSTTY_TAG }}/ghostty-source.tar.gz
+          curl -sL https://github.com/ghostty-org/ghostty/releases/download/${{ env.GHOSTTY_TAG }}/ghostty-source.tar.gz -o ghostty-source.tar.gz
           tar -xf ghostty-source.tar.gz
           echo "GHOSTTY_DIR=$(ls -d ghostty-*/)" >> $GITHUB_ENV
 
