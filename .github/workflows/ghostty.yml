@@ -10,71 +10,100 @@ on:
 
 env:
   GHOSTTY_VERSION: "tip"
+  ZIG_VERSION: "0.15.2"
 
 jobs:
   build-aarch64-gnu:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Zig
+        run: |
+          wget -q https://ziglang.org/download/${{ env.ZIG_VERSION }}/zig-linux-aarch64-${{ env.ZIG_VERSION }}.tar.xz
+          tar -xf zig-linux-aarch64-${{ env.ZIG_VERSION }}.tar.xz
+          echo "${{ github.workspace }}/zig-linux-aarch64-${{ env.ZIG_VERSION }}" >> $GITHUB_PATH
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            gettext \
+            libxml2-utils \
+            pkg-config
+
+      - name: Download Ghostty source
+        run: |
+          curl -sL https://github.com/ghostty-org/ghostty/releases/download/${{ env.GHOSTTY_VERSION }}/ghostty-source.tar.gz -o ghostty-source.tar.gz
+          tar -xf ghostty-source.tar.gz
+          echo "GHOSTTY_DIR=$(ls -d ghostty-*/)" >> $GITHUB_ENV
+
       - name: Build for aarch64-linux-gnu
-        uses: uraimo/run-on-arch-action@v2
-        with:
-          arch: aarch64
-          distro: ubuntu22
-          install: |
-            apt-get update -qq
-            apt-get install -y -qq curl git xz-utils
-          shell: /bin/bash -e
-          env:
-            NIX_CONFIG: |
-              substituters = https://ghostty.cachix.org
-              trusted-public-keys = ghostty.cachix.org-1:QB389yTa6gTyneehvqG58y0WnHjQOqgnA+wBnpWWxns=
-          run: |
-            sh <(curl -L https://nixos.org/nix/install) --daemon --yes
-            . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-            nix profile install github:ghostty-org/ghostty#ghostty
-            cp result/bin/ghostty ghostty-${{ env.GHOSTTY_VERSION }}-linux-aarch64-gnu
-            chmod +x ghostty-${{ env.GHOSTTY_VERSION }}-linux-aarch64-gnu
+        working-directory: ${{ env.GHOSTTY_DIR }}
+        run: |
+          zig build -Doptimize=ReleaseFast -fno-sys=gtk4-layer-shell
+
+      - name: Package binary
+        working-directory: ${{ env.GHOSTTY_DIR }}
+        run: |
+          mkdir -p ../release
+          cp zig-out/bin/ghostty ../release/ghostty-${{ env.GHOSTTY_VERSION }}-linux-aarch64-gnu
+          chmod +x ../release/ghostty-${{ env.GHOSTTY_VERSION }}-linux-aarch64-gnu
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ghostty-aarch64-gnu
-          path: ghostty-*-linux-aarch64-gnu
+          path: release/ghostty-*-linux-aarch64-gnu
 
   build-aarch64-musl:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Zig
+        run: |
+          wget -q https://ziglang.org/download/${{ env.ZIG_VERSION }}/zig-linux-aarch64-${{ env.ZIG_VERSION }}.tar.xz
+          tar -xf zig-linux-aarch64-${{ env.ZIG_VERSION }}.tar.xz
+          echo "${{ github.workspace }}/zig-linux-aarch64-${{ env.ZIG_VERSION }}" >> $GITHUB_PATH
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            gettext \
+            libxml2-utils \
+            pkg-config
+
+      - name: Download Ghostty source
+        run: |
+          curl -sL https://github.com/ghostty-org/ghostty/releases/download/${{ env.GHOSTTY_VERSION }}/ghostty-source.tar.gz -o ghostty-source.tar.gz
+          tar -xf ghostty-source.tar.gz
+          echo "GHOSTTY_DIR=$(ls -d ghostty-*/)" >> $GITHUB_ENV
+
       - name: Build for aarch64-linux-musl
-        uses: uraimo/run-on-arch-action@v2
-        with:
-          arch: aarch64
-          distro: ubuntu22
-          install: |
-            apt-get update -qq
-            apt-get install -y -qq curl git xz-utils
-          shell: /bin/bash -e
-          env:
-            NIX_CONFIG: |
-              substituters = https://ghostty.cachix.org
-              trusted-public-keys = ghostty.cachix.org-1:QB389yTa6gTyneehvqG58y0WnHjQOqgnA+wBnpWWxns=
-          run: |
-            sh <(curl -L https://nixos.org/nix/install) --daemon --yes
-            . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-            nix build github:ghostty-org/ghostty#packages.aarch64-linux-musl.ghostty
-            cp result/bin/ghostty ghostty-${{ env.GHOSTTY_VERSION }}-linux-aarch64-musl
-            chmod +x ghostty-${{ env.GHOSTTY_VERSION }}-linux-aarch64-musl
+        working-directory: ${{ env.GHOSTTY_DIR }}
+        run: |
+          zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-musl -fno-sys=gtk4-layer-shell
+
+      - name: Package binary
+        working-directory: ${{ env.GHOSTTY_DIR }}
+        run: |
+          mkdir -p ../release
+          cp zig-out/bin/ghostty ../release/ghostty-${{ env.GHOSTTY_VERSION }}-linux-aarch64-musl
+          chmod +x ../release/ghostty-${{ env.GHOSTTY_VERSION }}-linux-aarch64-musl
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ghostty-aarch64-musl
-          path: ghostty-*-linux-aarch64-musl
+          path: release/ghostty-*-linux-aarch64-musl
 
   release:
     needs: [build-aarch64-gnu, build-aarch64-musl]
