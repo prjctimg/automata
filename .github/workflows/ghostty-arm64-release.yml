@@ -30,7 +30,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libgtk-4-dev \
-            libgtk4-layer-shell-dev \
             libadwaita-1-dev \
             gettext \
             libxml2-utils \
@@ -38,15 +37,10 @@ jobs:
             gcc-aarch64-linux-gnu \
             g++-aarch64-linux-gnu
 
-      - name: Download Ghostty source
-        run: |
-          wget -q https://release.files.ghostty.org/${{ env.GHOSTTY_VERSION }}/ghostty-${{ env.GHOSTTY_VERSION }}.tar.gz
-          tar -xf ghostty-${{ env.GHOSTTY_VERSION }}.tar.gz
-
       - name: Build for aarch64-linux-gnu
         working-directory: ghostty-${{ env.GHOSTTY_VERSION }}
         run: |
-          zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-gnu
+          zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-gnu -fno-sys=gtk4-layer-shell
 
       - name: Package binary
         working-directory: ghostty-${{ env.GHOSTTY_VERSION }}
@@ -78,22 +72,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libgtk-4-dev \
-            libgtk4-layer-shell-dev \
             libadwaita-1-dev \
             gettext \
             libxml2-utils \
             pkg-config \
             musl-tools
 
-      - name: Download Ghostty source
-        run: |
-          wget -q https://release.files.ghostty.org/${{ env.GHOSTTY_VERSION }}/ghostty-${{ env.GHOSTTY_VERSION }}.tar.gz
-          tar -xf ghostty-${{ env.GHOSTTY_VERSION }}.tar.gz
-
       - name: Build for aarch64-linux-musl
         working-directory: ghostty-${{ env.GHOSTTY_VERSION }}
         run: |
-          zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-musl
+          zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-musl -fno-sys=gtk4-layer-shell
 
       - name: Package binary
         working-directory: ghostty-${{ env.GHOSTTY_VERSION }}
