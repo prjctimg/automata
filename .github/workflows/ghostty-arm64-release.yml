@@ -21,9 +21,9 @@ jobs:
 
       - name: Install Zig
         run: |
-          wget -q https://ziglang.org/download/${{ env.ZIG_VERSION }}/zig-linux-x86_64-${{ env.ZIG_VERSION }}.tar.xz
-          tar -xf zig-linux-x86_64-${{ env.ZIG_VERSION }}.tar.xz
-          echo "${{ github.workspace }}/zig-linux-x86_64-${{ env.ZIG_VERSION }}" >> $GITHUB_PATH
+          wget -q https://ziglang.org/download/${{ env.ZIG_VERSION }}/zig-x86_64-linux-${{ env.ZIG_VERSION }}.tar.xz
+          tar -xf zig-x86_64-linux-${{ env.ZIG_VERSION }}.tar.xz
+          echo "${{ github.workspace }}/zig-x86_64-linux-${{ env.ZIG_VERSION }}" >> $GITHUB_PATH
 
       - name: Install Linux dependencies
         run: |
@@ -69,9 +69,9 @@ jobs:
 
       - name: Install Zig
         run: |
-          wget -q https://ziglang.org/download/${{ env.ZIG_VERSION }}/zig-linux-x86_64-${{ env.ZIG_VERSION }}.tar.xz
-          tar -xf zig-linux-x86_64-${{ env.ZIG_VERSION }}.tar.xz
-          echo "${{ github.workspace }}/zig-linux-x86_64-${{ env.ZIG_VERSION }}" >> $GITHUB_PATH
+          wget -q https://ziglang.org/download/${{ env.ZIG_VERSION }}/zig-x86_64-linux-${{ env.ZIG_VERSION }}.tar.xz
+          tar -xf zig-x86_64-linux-${{ env.ZIG_VERSION }}.tar.xz
+          echo "${{ github.workspace }}/zig-x86_64-linux-${{ env.ZIG_VERSION }}" >> $GITHUB_PATH
 
       - name: Install Linux dependencies
         run: |
