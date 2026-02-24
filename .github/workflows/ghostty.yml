@@ -44,7 +44,7 @@ jobs:
       - name: Build for aarch64-linux
         working-directory: ${{ env.GHOSTTY_DIR }}
         run: |
-          zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-gnu.2.36 -fno-sys=gtk4-layer-shell
+          zig build -Doptimize=ReleaseFast -fno-sys=gtk4-layer-shell
 
       - name: Package binary
         working-directory: ${{ env.GHOSTTY_DIR }}
