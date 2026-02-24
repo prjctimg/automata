@@ -44,20 +44,20 @@ jobs:
       - name: Build for aarch64-linux
         working-directory: ${{ env.GHOSTTY_DIR }}
         run: |
-          zig build -Doptimize=ReleaseFast -fno-sys=gtk4-layer-shell
+          zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-gnu.2.36 -fno-sys=gtk4-layer-shell
 
       - name: Package binary
         working-directory: ${{ env.GHOSTTY_DIR }}
         run: |
           mkdir -p ../release
-          cp zig-out/bin/ghostty ../release/ghostty-${{ env.GHOSTTY_VERSION }}-linux-aarch64
-          chmod +x ../release/ghostty-${{ env.GHOSTTY_VERSION }}-linux-aarch64
+          cp zig-out/bin/ghostty ../release/ghostty-${{ env.GHOSTTY_VERSION }}-linux-aarch64-glibc236
+          chmod +x ../release/ghostty-${{ env.GHOSTTY_VERSION }}-linux-aarch64-glibc236
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ghostty-aarch64
-          path: release/ghostty-*-linux-aarch64
+          name: ghostty-aarch64-glibc236
+          path: release/ghostty-*-linux-aarch64-glibc236
 
   release:
     needs: build-aarch64
@@ -74,11 +74,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: Ghostty ${{ env.GHOSTTY_VERSION }} ARM64
+          name: Ghostty ${{ env.GHOSTTY_VERSION }} ARM64 (glibc 2.36+)
           draft: false
           prerelease: false
           generate_release_notes: true
           files: |
-            artifacts/ghostty-aarch64/ghostty-*-linux-aarch64
+            artifacts/ghostty-aarch64-glibc236/ghostty-*-linux-aarch64-glibc236
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
