@@ -10,6 +10,7 @@ on:
 
 env:
   GHOSTTY_VERSION: "tip"
+  ZIG_VERSION: "0.15.2"
 
 jobs:
   build-aarch64:
@@ -18,22 +19,39 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Nix
-        uses: cachix/install-nix-action@v26
-        with:
-          nix_config: |
-            substituters = https://ghostty.cachix.org
-            trusted-public-keys = ghostty.cachix.org-1:QB389yTa6gTyneehvqG58y0WnHjQOqgnA+wBnpWWxns=
+      - name: Install Zig
+        run: |
+          wget -q https://ziglang.org/download/${{ env.ZIG_VERSION }}/zig-aarch64-linux-${{ env.ZIG_VERSION }}.tar.xz
+          tar -xf zig-aarch64-linux-${{ env.ZIG_VERSION }}.tar.xz
+          echo "${{ github.workspace }}/zig-aarch64-linux-${{ env.ZIG_VERSION }}" >> $GITHUB_PATH
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            gettext \
+            libxml2-utils \
+            pkg-config
+
+      - name: Download Ghostty source
+        run: |
+          curl -sL https://github.com/ghostty-org/ghostty/releases/download/${{ env.GHOSTTY_VERSION }}/ghostty-source.tar.gz -o ghostty-source.tar.gz
+          tar -xf ghostty-source.tar.gz
+          echo "GHOSTTY_DIR=$(ls -d ghostty-*/)" >> $GITHUB_ENV
 
       - name: Build for aarch64-linux
+        working-directory: ${{ env.GHOSTTY_DIR }}
         run: |
-          nix build github:ghostty-org/ghostty#ghostty --accept-flake-config
+          zig build -Doptimize=ReleaseFast -fno-sys=gtk4-layer-shell
 
       - name: Package binary
+        working-directory: ${{ env.GHOSTTY_DIR }}
         run: |
-          mkdir -p release
-          cp result/bin/ghostty release/ghostty-${{ env.GHOSTTY_VERSION }}-linux-aarch64
-          chmod +x release/ghostty-${{ env.GHOSTTY_VERSION }}-linux-aarch64
+          mkdir -p ../release
+          cp zig-out/bin/ghostty ../release/ghostty-${{ env.GHOSTTY_VERSION }}-linux-aarch64
+          chmod +x ../release/ghostty-${{ env.GHOSTTY_VERSION }}-linux-aarch64
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
