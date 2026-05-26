@@ -15,24 +15,26 @@ mkdir -p "$ASSETS_DIR"
 echo "🧹 Cleaning up existing documentation..."
 rm -f "$OUTPUT_DIR"/p5-*.txt "$OUTPUT_DIR"/p5.md
 
-echo "📖 Extracting documentation from @types/p5... 🔍📦"
+echo "📖 Extracting documentation from p5.js source... 🔍📦"
 
-# Get p5 version from package.json
-P5_VERSION=$(cat node_modules/@types/p5/package.json | grep '"version":' | sed -E 's/.*"([^"]+)".*/\1/' || echo "1.7.7")
+P5_SOURCE="${P5_SOURCE_DIR:-/tmp/p5.js}"
+
+# Get p5 version from p5.js source
+P5_VERSION=$(cat "$P5_SOURCE/package.json" | grep '"version":' | sed -E 's/.*"([^"]+)".*/\1/' || echo "2.2.3")
 TIMESTAMP=$(date -Iseconds | sed 's/T/ /' | sed 's/\..*//')
 
 echo "📦 p5.js version: $P5_VERSION 🎯"
 echo "📅 Last updated: $TIMESTAMP ⏰"
 
-# Check if types file exists
-TYPES_FILE="$ASSETS_DIR/types/p5.d.ts"
-if [ ! -f "$TYPES_FILE" ]; then
-	echo "❌ TypeScript definitions not found. Run types generation first. 📂❌"
+# Check that documentation data.json exists
+DOCS_DATA="$P5_SOURCE/docs/data.json"
+if [ ! -f "$DOCS_DATA" ]; then
+	echo "❌ p5.js docs/data.json not found. Run documentation build first. 📂❌"
 	exit 1
 fi
 
 echo "📝 Generating documentation for all modules..."
-if node scripts/p5/docs.js; then
+if P5_SOURCE_DIR="$P5_SOURCE" node scripts/p5/docs.js; then
 	echo "✅ Documentation generation successful"
 else
 	echo "❌ Documentation generation failed"

@@ -23,8 +23,6 @@
   },
   "homepage": "https://github.com/prjctimg/automata#readme",
   "dependencies": {
-    "@types/p5": "^1.7.7",
-    "dts-bundle": "^0.7.3",
     "typescript": "^5.9.3"
   }
 }

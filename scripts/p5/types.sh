@@ -8,7 +8,8 @@ echo "🚀 Starting p5.js TypeScript definitions generation... 📝🔧"
 mkdir -p assets/types
 
 echo "📦 Generating TypeScript definitions..."
-if node scripts/p5/types.js; then
+P5_SOURCE="${P5_SOURCE_DIR:-/tmp/p5.js}"
+if P5_SOURCE_DIR="$P5_SOURCE" node scripts/p5/types.js; then
 	echo "✅ Types generation successful"
 
 	# Validate generated types
