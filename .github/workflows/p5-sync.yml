@@ -121,6 +121,19 @@ jobs:
           test -s "$DEST/doc/tags"
           test -s "$DEST/assets/types/p5.d.ts"
 
+          # Types/favicon ship with the plugin (automata-owned); stop ignoring them
+          if [ -f "$DEST/.gitignore" ]; then
+            sed -i \
+              -e '/^assets\/types\/$/d' \
+              -e '/^assets\/favicon\.ico$/d' \
+              "$DEST/.gitignore"
+            # Ensure libs stay ignored (CDN-fetched at runtime)
+            if ! grep -qx 'assets/libs/' "$DEST/.gitignore"; then
+              echo 'assets/libs/' >>"$DEST/.gitignore"
+            fi
+            echo "✅ Updated .gitignore for shipped assets"
+          fi
+
           echo "📁 Destination snapshot:"
           ls -la "$DEST/assets/types/"
           ls -la "$DEST/doc/" | head -30
@@ -134,7 +147,8 @@ jobs:
           git config user.name "gh-actions"
           git config user.email "actions@github.com"
 
-          git add assets/types assets/favicon.ico doc/
+          # force-add in case ignore rules still match on first sync
+          git add -f assets/types assets/favicon.ico doc/ .gitignore
 
           if git diff --staged --quiet; then
             echo "ℹ️  No changes to commit"
