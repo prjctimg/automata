@@ -1,8 +1,6 @@
 name: p5.js Sync
 
 on:
-  release:
-    types: [published]
   schedule:
     - cron: "0 2 * * 0"
   workflow_dispatch:
@@ -17,11 +15,10 @@ jobs:
     name: Generate and Sync
 
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
 
     steps:
-      - name: Checkout this repository
+      - name: Checkout automata
         uses: actions/checkout@v4
 
       - name: Setup Node
@@ -29,101 +26,132 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Install dependencies
-        run: npm install
-
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq curl pandoc
+          sudo apt-get install -y jq curl neovim
 
-      - name: Clone p5.js
+      - name: Generate TypeScript definitions
+        run: |
+          echo "📦 Bundling types from npm p5 package..."
+          chmod +x ./scripts/p5/types.sh
+          ./scripts/p5/types.sh
+
+      - name: Clone p5.js (for API docs)
         run: |
           echo "📥 Cloning p5.js repository..."
-          git clone --depth 1 https://github.com/processing/p5.js.git /tmp/p5.js
+          git clone --depth 1 https://github.com/processing/p5.js.git "${{ env.P5_SOURCE_DIR }}"
 
       - name: Generate p5.js documentation data
         run: |
           echo "📖 Building p5.js documentation data..."
-          cd /tmp/p5.js
+          cd "${{ env.P5_SOURCE_DIR }}"
           mkdir -p docs
-          npx documentation build ./src/**/*.js ./src/**/**/*.js --shallow -o docs/data.json
+          npx --yes documentation@14 build ./src/**/*.js ./src/**/**/*.js --shallow -o docs/data.json
+          test -s docs/data.json
           echo "✅ Documentation data generated"
 
-      - name: Generate TypeScript definitions
-        run: |
-          echo "📦 Generating TypeScript definitions from p5.js source..."
-          ./scripts/p5/types.sh
-
-      - name: Download p5.js modules from releases
-        run: |
-          echo "📦 Downloading p5.js modules..."
-          ./scripts/p5/assets.sh
-
       - name: Generate Vimdoc documentation
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "🚀 Starting documentation generation..."
+          chmod +x ./scripts/p5/docs.sh
           ./scripts/p5/docs.sh
 
-      - name: Copy static assets
+      - name: Validate artifacts
         run: |
-          mkdir -p assets/static
-          cp static/favicon.ico assets/static/ || true
+          set -euo pipefail
+          test -s assets/types/p5.d.ts
+          API_COUNT=$(find doc -maxdepth 1 -type f -name 'p5-*.txt' ! -name 'p5-nvim.txt' | wc -l)
+          echo "API help files: $API_COUNT"
+          test "$API_COUNT" -gt 0
+          ls -la assets/types/
+          ls -la doc/p5-*.txt | head -20
 
       - name: Clone p5.nvim repository
         run: |
           echo "📥 Cloning p5.nvim repository..."
-          git clone https://x-access-token:${{ secrets.P5NVIM_PUSH_TOKEN }}@github.com/prjctimg/p5.nvim.git /tmp/p5.nvim
+          if [ -z "${{ secrets.P5NVIM_PUSH_TOKEN }}" ]; then
+            echo "❌ P5NVIM_PUSH_TOKEN secret is not set"
+            exit 1
+          fi
+          git clone --depth 1 \
+            "https://x-access-token:${{ secrets.P5NVIM_PUSH_TOKEN }}@github.com/prjctimg/p5.nvim.git" \
+            /tmp/p5.nvim
 
-      - name: Convert README to text
+      - name: Sync artifacts into p5.nvim
         run: |
-          echo "📝 Converting README to text..."
-          cd /tmp/p5.nvim
-          pandoc -t plain -o p5.nvim.txt README.md
+          set -euo pipefail
+          ROOT="${GITHUB_WORKSPACE}"
+          DEST=/tmp/p5.nvim
 
-      - name: Commit and push all artifacts to p5.nvim
+          echo "📝 Syncing types and vim help into p5.nvim..."
+
+          # Types (replace directory contents)
+          rm -rf "$DEST/assets/types"
+          mkdir -p "$DEST/assets/types"
+          cp -a "$ROOT/assets/types/." "$DEST/assets/types/"
+          # Don't ship internal version marker if present is fine; keep it for debugging
+          echo "✅ Copied types"
+
+          # Favicon at assets/favicon.ico (plugin expects this path)
+          if [ -f "$ROOT/static/favicon.ico" ]; then
+            mkdir -p "$DEST/assets"
+            cp "$ROOT/static/favicon.ico" "$DEST/assets/favicon.ico"
+            echo "✅ Copied favicon"
+          fi
+
+          # API vim help only — never overwrite plugin-owned p5-nvim.txt
+          mkdir -p "$DEST/doc"
+          find "$ROOT/doc" -maxdepth 1 -type f -name 'p5-*.txt' ! -name 'p5-nvim.txt' -exec cp -t "$DEST/doc/" {} +
+          echo "✅ Copied API help files"
+
+          if [ ! -f "$DEST/doc/p5-nvim.txt" ]; then
+            echo "⚠️  doc/p5-nvim.txt missing in p5.nvim (plugin-owned; not generated here)"
+          fi
+
+          # Regenerate helptags so plugin + API tags coexist
+          if command -v nvim >/dev/null 2>&1; then
+            nvim --headless -u NONE -c "helptags $DEST/doc" -c qa
+            echo "✅ Regenerated doc/tags via nvim helptags"
+          else
+            echo "❌ nvim not available for helptags"
+            exit 1
+          fi
+
+          test -s "$DEST/doc/tags"
+          test -s "$DEST/assets/types/p5.d.ts"
+
+          echo "📁 Destination snapshot:"
+          ls -la "$DEST/assets/types/"
+          ls -la "$DEST/doc/" | head -30
+          rg -n 'p5\.nvim|^p5-core' "$DEST/doc/tags" | head -10 || true
+
+      - name: Commit and push to p5.nvim
         run: |
-          echo "📝 Committing all artifacts to p5.nvim..."
+          set -euo pipefail
           cd /tmp/p5.nvim
 
-          # Copy generated docs
-          mkdir -p doc/
-          cp -r /home/runner/work/automata/automata/doc/* doc/ || true
-
-          # Copy generated types
-          if [ -d "/home/runner/work/automata/automata/assets/types" ]; then
-            mkdir -p assets/types
-            cp -r /home/runner/work/automata/automata/assets/types/* assets/types/ || true
-            echo "✅ Copied types"
-          fi
-
-          # Copy generated modules
-          if [ -d "/home/runner/work/automata/automata/assets/libs" ]; then
-            mkdir -p assets/libs
-            cp -r /home/runner/work/automata/automata/assets/libs/* assets/libs/ || true
-            echo "✅ Copied modules"
-          fi
-
-          # Copy static assets
-          if [ -d "/home/runner/work/automata/automata/assets/static" ]; then
-            mkdir -p assets/static
-            cp -r /home/runner/work/automata/automata/assets/static/* assets/static/ || true
-            echo "✅ Copied static assets"
-          fi
-
-          # Configure git
           git config user.name "gh-actions"
           git config user.email "actions@github.com"
 
-          # Add and commit changes
-          git add doc/ assets/ p5.nvim.txt
-          git diff --staged --quiet || git commit -m "docs: autogenerated p5.js assets and documentation"
+          git add assets/types assets/favicon.ico doc/
 
-          # Push changes
-          git pull origin main --rebase || true
-          git push origin main --force-with-lease
+          if git diff --staged --quiet; then
+            echo "ℹ️  No changes to commit"
+          else
+            P5_VER=""
+            if [ -f assets/types/.p5-version ]; then
+              P5_VER=$(cat assets/types/.p5-version)
+            fi
+            MSG="docs: sync p5.js types and vim help from automata"
+            if [ -n "$P5_VER" ]; then
+              MSG="docs: sync p5.js ${P5_VER} types and vim help from automata"
+            fi
+            git commit -m "$MSG"
+            git pull --rebase origin main
+            git push origin main
+            echo "✅ Pushed to prjctimg/p5.nvim main"
+          fi
 
       - name: Upload artifacts
         if: always()
@@ -132,12 +160,22 @@ jobs:
           name: p5-artifacts
           path: |
             doc/
-            assets/
+            assets/types/
 
       - name: Summary
+        if: always()
         run: |
-          echo "## p5.js Sync Complete 🎉" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Generated TypeScript definitions from p5.js source" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Downloaded p5.js library modules" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Generated Vimdoc documentation" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Updated p5.nvim repository" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## p5.js Sync"
+            echo ""
+            if [ -f assets/types/.p5-version ]; then
+              echo "- p5 version: \`$(cat assets/types/.p5-version)\`"
+            fi
+            if [ -f assets/types/p5.d.ts ]; then
+              echo "- types: \`assets/types/p5.d.ts\` ($(stat -c%s assets/types/p5.d.ts) bytes)"
+            fi
+            API_COUNT=$(find doc -maxdepth 1 -type f -name 'p5-*.txt' ! -name 'p5-nvim.txt' 2>/dev/null | wc -l || echo 0)
+            echo "- API help files: $API_COUNT"
+            echo "- Target: [prjctimg/p5.nvim](https://github.com/prjctimg/p5.nvim) \`main\` (direct push)"
+            echo "- Scope: \`assets/types/\`, \`doc/p5-*.txt\` (not p5-nvim.txt), \`doc/tags\`, \`assets/favicon.ico\`"
+          } >> "$GITHUB_STEP_SUMMARY"

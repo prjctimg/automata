@@ -119,7 +119,7 @@ function extractDocumentation() {
   }
 
   const pkgPath = path.join(P5_SOURCE, 'package.json');
-  let p5Version = '2.2.3';
+  let p5Version = process.env.P5_VERSION || 'unknown';
   if (fs.existsSync(pkgPath)) {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
     p5Version = pkg.version || p5Version;
@@ -174,6 +174,11 @@ function extractDocumentation() {
   console.log(`📊 Found ${Object.keys(modules).length} modules with ${Object.values(modules).reduce((t, f) => t + f.length, 0)} functions`);
 
   for (const [moduleName, functions] of Object.entries(modules)) {
+    // Plugin help is owned by p5.nvim — never overwrite
+    if (moduleName === 'nvim') {
+      console.log('  ⏭️  skipping reserved module name: nvim');
+      continue;
+    }
     const vimdoc = createVimdocContent(moduleName, functions, p5Version, timestamp);
     fs.writeFileSync(path.join(outputDir, `p5-${moduleName}.txt`), vimdoc);
     console.log(`  ✅ p5-${moduleName}.txt (${functions.length} functions)`);
