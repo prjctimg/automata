@@ -10,9 +10,28 @@ if (!fs.existsSync(outputDir)) {
   fs.mkdirSync(outputDir, { recursive: true });
 }
 
+function asText(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return value.map(asText).filter(Boolean).join(' ');
+  if (typeof value === 'object') {
+    if (typeof value.value === 'string') return value.value;
+    if (typeof value.description === 'string') return value.description;
+    if (Array.isArray(value.children)) return value.children.map(asText).filter(Boolean).join(' ');
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return '';
+    }
+  }
+  return String(value);
+}
+
 function wrapText(text, maxLength = 78) {
-  if (!text || text.length <= maxLength) return text;
-  const words = text.split(' ');
+  const normalized = asText(text).replace(/\s+/g, ' ').trim();
+  if (!normalized || normalized.length <= maxLength) return normalized;
+  const words = normalized.split(' ');
   const lines = [];
   let currentLine = '';
   for (const word of words) {
@@ -139,7 +158,7 @@ function extractDocumentation() {
     const filePath = entry.path || [];
     const moduleName = filePath.length >= 2 ? filePath[1] : 'core';
 
-    const description = entry.description ? entry.description.replace(/\s+/g, ' ').trim() : '';
+    const description = asText(entry.description).replace(/\s+/g, ' ').trim();
 
     const params = [];
     const returns = [];
@@ -147,13 +166,12 @@ function extractDocumentation() {
     if (entry.tags) {
       for (const tag of entry.tags) {
         if (tag.title === 'param') {
-          const paramDesc = tag.description ? tag.description.replace(/\s+/g, ' ').trim() : '';
           params.push({
             name: tag.name || '',
-            description: paramDesc,
+            description: asText(tag.description).replace(/\s+/g, ' ').trim(),
           });
         } else if (tag.title === 'return' || tag.title === 'returns') {
-          returns.push(tag.description ? tag.description.replace(/\s+/g, ' ').trim() : '');
+          returns.push(asText(tag.description).replace(/\s+/g, ' ').trim());
         }
       }
     }
