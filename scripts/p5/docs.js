@@ -90,7 +90,7 @@ ${paramsList}
     const cleanReturn = func.returns || 'void';
 
     return `
-\`${func.name}()\`                                            |p5-${moduleName}-${func.name}|
+\`${func.name}()\`                                            *p5-${moduleName}-${func.name}*
 
 ${wrappedDesc}
 ${paramsSection}
@@ -118,7 +118,7 @@ ${emoji} ${moduleName.charAt(0).toUpperCase() + moduleName.slice(1)} module for 
 ⏰ Last Updated: ${timestamp}~
 
 ==============================================================================
-2. Functions                                                |p5-${moduleName}-functions|
+2. Functions                                                *p5-${moduleName}-functions*
 
 ${functionDocs}
 ==============================================================================
@@ -215,7 +215,7 @@ Table of Contents                                  *p5-modules-table-of-contents
 ⏰ Last Updated: ${timestamp}~
 
 ==============================================================================
-1. Available Modules                                      |p5-modules-available|
+1. Available Modules                                      *p5-modules-available*
 
 ${Object.entries(modules).map(([moduleName, functions]) => {
   const emoji = moduleEmojis[moduleName] || '📚';
