@@ -1,0 +1,134 @@
+name: "craftty: gtm clippy-fix"
+
+on:
+  repository_dispatch:
+    types: [gtm-clippy-fix]
+
+concurrency:
+  group: craftty-gtm-clippy-fix-${{ github.event.client_payload.ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  TARGET_REPO: craftty-org/gtm
+  TARGET_SHA: ${{ github.event.client_payload.sha }}
+  TARGET_REF: ${{ github.event.client_payload.ref }}
+  STATUS_WORKFLOW: gtm-clippy-fix
+
+jobs:
+  status-start:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Record run start
+        run: |
+          node scripts/status/record-run.mjs \
+            --repo "$TARGET_REPO" --workflow "$STATUS_WORKFLOW" \
+            --run-id "${{ github.run_id }}" --run-number "${{ github.run_number }}" \
+            --event "${{ github.event.client_payload.event_name || 'repository_dispatch' }}" \
+            --ref "$TARGET_REF" --sha "$TARGET_SHA" \
+            --status in_progress \
+            --actor "${{ github.event.client_payload.actor || github.actor }}" \
+            --html-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Commit status
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add status/
+          git diff --cached --quiet && exit 0
+          git commit -m "status: $STATUS_WORKFLOW $TARGET_REPO@${TARGET_SHA::7} start [skip ci]"
+          for i in 1 2 3; do git pull --rebase origin main && git push origin HEAD:main && break; sleep 5; done
+
+  clippy-fix:
+    needs: status-start
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: craftty-org/gtm
+          ref: ${{ github.event.client_payload.sha }}
+          token: ${{ secrets.CRAFTTY_REPO_TOKEN }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install ALSA headers (Linux)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Apply clippy auto-fixes
+        run: cargo clippy --fix --workspace --allow-dirty --all-targets --features gtm/mpris,gtmd/mpris,gtmd/youtube
+      - name: Normalize formatting of auto-fixes
+        run: cargo fmt
+      - name: Format
+        run: cargo fmt --check
+      - name: Verify with cargo check
+        id: verify
+        run: cargo check --workspace --features gtm/mpris,gtmd/mpris,gtmd/youtube
+      - name: Commit and push fixes
+        if: success()
+        shell: bash
+        env:
+          GH_BOT_TOKEN: ${{ secrets.CRAFTTY_REPO_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+            exit 0
+          fi
+          git commit -m "style: auto-fix clippy lints [skip ci]"
+          git push "https://x-access-token:${GH_BOT_TOKEN}@github.com/${TARGET_REPO}.git" HEAD:${TARGET_REF#refs/heads/}
+      - name: Open PR if verification failed
+        if: failure()
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.CRAFTTY_REPO_TOKEN }}
+          commit-message: "style: apply clippy auto-fixes"
+          title: "style: apply clippy auto-fixes"
+          body: |
+            `cargo clippy --fix` produced changes that did not pass `cargo check`
+            and were not auto-merged. Please review.
+          branch: clippy/auto-fix
+          delete-branch: true
+          labels: |
+            clippy
+            automated
+
+  status-finish:
+    if: always()
+    needs: [status-start, clippy-fix]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Determine conclusion
+        id: conclusion
+        run: |
+          r="${{ needs.clippy-fix.result }}"
+          if [ "$r" = "success" ]; then echo "conclusion=success" >> "$GITHUB_OUTPUT"
+          elif [ "$r" = "cancelled" ]; then echo "conclusion=cancelled" >> "$GITHUB_OUTPUT"
+          else echo "conclusion=failure" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Record run finish
+        run: |
+          node scripts/status/record-run.mjs \
+            --repo "$TARGET_REPO" --workflow "$STATUS_WORKFLOW" \
+            --run-id "${{ github.run_id }}" --run-number "${{ github.run_number }}" \
+            --event "${{ github.event.client_payload.event_name || 'repository_dispatch' }}" \
+            --ref "$TARGET_REF" --sha "$TARGET_SHA" \
+            --status completed --conclusion "${{ steps.conclusion.outputs.conclusion }}" \
+            --actor "${{ github.event.client_payload.actor || github.actor }}" \
+            --html-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Commit status
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add status/
+          git diff --cached --quiet && exit 0
+          git commit -m "status: $STATUS_WORKFLOW $TARGET_REPO@${TARGET_SHA::7} ${{ steps.conclusion.outputs.conclusion }} [skip ci]"
+          for i in 1 2 3; do git pull --rebase origin main && git push origin HEAD:main && break; sleep 5; done

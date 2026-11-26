@@ -1,0 +1,116 @@
+name: "craftty: gtw ci"
+
+on:
+  repository_dispatch:
+    types: [gtw-ci]
+
+concurrency:
+  group: craftty-gtw-ci-${{ github.event.client_payload.sha || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  TARGET_REPO: craftty-org/gtw
+  TARGET_SHA: ${{ github.event.client_payload.sha }}
+  TARGET_REF: ${{ github.event.client_payload.ref }}
+  STATUS_WORKFLOW: gtw-ci
+
+jobs:
+  status-start:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Record run start
+        run: |
+          node scripts/status/record-run.mjs \
+            --repo "$TARGET_REPO" --workflow "$STATUS_WORKFLOW" \
+            --run-id "${{ github.run_id }}" --run-number "${{ github.run_number }}" \
+            --event "${{ github.event.client_payload.event_name || 'repository_dispatch' }}" \
+            --ref "$TARGET_REF" --sha "$TARGET_SHA" --status in_progress \
+            --actor "${{ github.event.client_payload.actor || github.actor }}" \
+            --html-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Commit status
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add status/
+          git diff --cached --quiet && exit 0
+          git commit -m "status: $STATUS_WORKFLOW $TARGET_REPO@${TARGET_SHA::7} start [skip ci]"
+          for i in 1 2 3; do git pull --rebase origin main && git push origin HEAD:main && break; sleep 5; done
+
+  check:
+    needs: status-start
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    env:
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'false'
+      VERGEN_GIT_SHA: ${{ github.event.client_payload.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: craftty-org/gtw
+          ref: ${{ github.event.client_payload.sha }}
+          fetch-depth: 0
+      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+      - name: no-ffmpeg dependency gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -nE '^name = "(ffmpeg|ffmpeg-[^"]*|libav[^"]*)"' Cargo.lock; then
+            echo "::error::FFmpeg is forbidden; use the pure-Rust zvidlib pipeline" >&2
+            exit 1
+          fi
+          if cargo tree --workspace --all-features | grep -Ei '(^| )((ffmpeg|libav)[a-z0-9_-]*) v'; then
+            echo "::error::FFmpeg is forbidden; use the pure-Rust zvidlib pipeline" >&2
+            exit 1
+          fi
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --no-fail-fast
+      - run: cargo deny check
+      - run: cargo build --workspace --release
+
+  status-finish:
+    if: always()
+    needs: [status-start, check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Determine conclusion
+        id: conclusion
+        run: |
+          r="${{ needs.check.result }}"
+          if [ "$r" = "success" ]; then echo "conclusion=success" >> "$GITHUB_OUTPUT"
+          elif [ "$r" = "cancelled" ]; then echo "conclusion=cancelled" >> "$GITHUB_OUTPUT"
+          else echo "conclusion=failure" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Record run finish
+        run: |
+          node scripts/status/record-run.mjs \
+            --repo "$TARGET_REPO" --workflow "$STATUS_WORKFLOW" \
+            --run-id "${{ github.run_id }}" --run-number "${{ github.run_number }}" \
+            --event "${{ github.event.client_payload.event_name || 'repository_dispatch' }}" \
+            --ref "$TARGET_REF" --sha "$TARGET_SHA" --status completed \
+            --conclusion "${{ steps.conclusion.outputs.conclusion }}" \
+            --actor "${{ github.event.client_payload.actor || github.actor }}" \
+            --html-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Commit status
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add status/
+          git diff --cached --quiet && exit 0
+          git commit -m "status: $STATUS_WORKFLOW $TARGET_REPO@${TARGET_SHA::7} ${{ steps.conclusion.outputs.conclusion }} [skip ci]"
+          for i in 1 2 3; do git pull --rebase origin main && git push origin HEAD:main && break; sleep 5; done

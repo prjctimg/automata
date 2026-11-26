@@ -1,0 +1,412 @@
+name: "craftty: gtw nightly"
+
+on:
+  repository_dispatch:
+    types: [gtw-nightly]
+
+concurrency:
+  group: craftty-gtw-nightly-${{ github.event.client_payload.ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: "false"
+  NODE_OPTIONS: --use-system-ca
+  TARGET_REPO: craftty-org/gtw
+  TARGET_SHA: ${{ github.event.client_payload.sha }}
+  TARGET_REF: ${{ github.event.client_payload.ref }}
+  STATUS_WORKFLOW: gtw-nightly
+
+jobs:
+
+  status-start:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Record run start
+        run: |
+          node scripts/status/record-run.mjs --repo "$TARGET_REPO" --workflow "$STATUS_WORKFLOW" --run-id "${{ github.run_id }}" --run-number "${{ github.run_number }}" --event "${{ github.event.client_payload.event_name || 'repository_dispatch' }}" --ref "$TARGET_REF" --sha "$TARGET_SHA" --status in_progress --actor "${{ github.event.client_payload.actor || github.actor }}" --html-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Commit status
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add status/
+          git diff --cached --quiet && exit 0
+          git commit -m "status: $STATUS_WORKFLOW $TARGET_REPO@${TARGET_SHA::7} start [skip ci]"
+          for i in 1 2 3; do git pull --rebase origin main && git push origin HEAD:main && break; sleep 5; done
+  tag:
+    needs: status-start
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.set-tag.outputs.tag }}
+      version: ${{ steps.set-tag.outputs.version }}
+      nightly: "true"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: craftty-org/gtw
+          ref: ${{ github.event.client_payload.sha }}
+          fetch-depth: 0
+          token: ${{ secrets.CRAFTTY_REPO_TOKEN }}
+      - name: Derive nightly tag
+        id: set-tag
+        run: |
+          set -euo pipefail
+          short_sha="${TARGET_SHA::7}"
+          manifest_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          tag="nightly"
+          version="${manifest_version}+${short_sha}+nightly"
+          git config user.name "prjctimg"
+          git config user.email "prjctimg@outlook.com"
+          git tag -f "$tag"
+          git push "https://x-access-token:${{ secrets.CRAFTTY_REPO_TOKEN }}@github.com/${TARGET_REPO}.git" "$tag" --force
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: tag
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    permissions:
+      contents: read
+    env:
+      RUSTFLAGS: >-
+        ${{ contains(matrix.platform, 'musl') && '-C target-feature=-crt-static' || '' }}
+        ${{ matrix.link_override }}
+        ${{ matrix.mold_arg }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: x86_64-linux
+            container: debian:12
+            family: debian
+            link_override: "-C linker=gcc"
+            mold_arg: "-C link-arg=-fuse-ld=mold"
+          - os: ubuntu-24.04-arm
+            platform: aarch64-linux
+            container: debian:12
+            family: debian
+            link_override: "-C linker=gcc"
+            mold_arg: "-C link-arg=-fuse-ld=mold"
+          - os: macos-15
+            platform: aarch64-darwin
+            container: null
+            family: macos
+            link_override: null
+            mold_arg: null
+          - os: ubuntu-latest
+            platform: aarch64-android
+            container: null
+            family: android
+            link_override: null
+            mold_arg: null
+          - os: ubuntu-22.04
+            platform: x86_64-linux-arch
+            container: archlinux:latest
+            family: arch
+            link_override: "-C linker=gcc"
+            mold_arg: "-C link-arg=-fuse-ld=mold"
+          - os: ubuntu-24.04-arm
+            platform: aarch64-linux-arch
+            container: null
+            family: arch-arm
+            link_override: "-C linker=gcc"
+            mold_arg: "-C link-arg=-fuse-ld=mold"
+          - os: ubuntu-22.04
+            platform: x86_64-linux-musl
+            container: null
+            family: musl
+            link_override: "-C linker=gcc"
+            mold_arg: "-C link-arg=-fuse-ld=mold"
+          - os: ubuntu-24.04-arm
+            platform: aarch64-linux-musl
+            container: null
+            family: musl
+            link_override: "-C linker=gcc"
+            mold_arg: "-C link-arg=-fuse-ld=mold"
+    steps:
+      - name: Bootstrap tooling (Debian 12 container)
+        if: matrix.container == 'debian:12'
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git pkg-config \
+            libasound2-dev dpkg-dev rpm zstd libarchive-tools \
+            build-essential cmake liblzma-dev clang lld mold
+      - name: Install Rust (Debian 12 container)
+        if: matrix.container == 'debian:12'
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Bootstrap tooling (Arch Linux container)
+        if: matrix.container == 'archlinux:latest'
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            base-devel rust alsa-lib cmake clang lld mold git libarchive zstd
+      - uses: actions/checkout@v7
+        with:
+          repository: craftty-org/gtw
+          ref: ${{ github.event.client_payload.sha }}
+      - name: Install Rust (native jobs)
+        if: matrix.container == null && matrix.family != 'musl' && matrix.family != 'arch-arm'
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-${{ matrix.platform }}
+      - name: Install system dependencies (macOS)
+        if: matrix.family == 'macos'
+        run: brew install pkg-config
+      - name: Build musl binaries + packages (Alpine container)
+        if: matrix.family == 'musl'
+        run: |
+          platform="${{ matrix.platform }}"
+          arch="${platform%-linux-musl}"
+          docker run --rm \
+            -v "$PWD":/work -w /work -e HOME=/root \
+            alpine:3.22 \
+            /bin/sh -c "apk add --no-cache bash && /bin/bash /work/scripts/build/musl-in-container.sh \
+              ${platform} ${{ needs.tag.outputs.version }} ${arch}"
+      - name: Build Arch Linux binaries + packages (arm64 container)
+        if: matrix.family == 'arch-arm'
+        run: |
+          docker run --rm \
+            -v "$PWD":/work -w /work -e HOME=/root \
+            lfdevs/archlinuxarm:base-devel \
+            /bin/bash -c "
+              set -euo pipefail
+              echo 'DisableSandboxFilesystem' >> /etc/pacman.conf
+              pacman-key --init
+              pacman-key --populate archlinuxarm
+              for attempt in 1 2 3 4 5; do
+                pacman -Syu --noconfirm && break
+                [ \"\$attempt\" -lt 5 ] || { echo '::error::pacman -Syu failed' >&2; exit 1; }
+                sleep 10
+              done
+              /bin/bash /work/scripts/build/arch-in-container.sh aarch64-linux-arch ${{ needs.tag.outputs.version }} aarch64
+            "
+      - name: Install Android NDK + tools
+        if: matrix.family == 'android'
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27b
+      - name: Install Rust Android target
+        if: matrix.family == 'android'
+        run: |
+          rustup target add aarch64-linux-android
+          cargo install cargo-ndk
+      - name: Install host build deps (Android)
+        if: matrix.family == 'android'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Build Android release binary
+        if: matrix.family == 'android'
+        run: |
+          CARGO_INCREMENTAL=0 cargo ndk -t arm64-v8a -P 27 build --release
+      - name: Build host binary for generated docs (Android)
+        if: matrix.family == 'android'
+        run: cargo build --release
+      - name: Build release binary
+        if: matrix.family == 'debian' || matrix.family == 'macos'
+        run: cargo build --release
+      - name: Assert glibc compatibility (<= 2.36)
+        if: matrix.family == 'debian'
+        shell: bash
+        run: |
+          set -euo pipefail
+          max="$(objdump -T target/release/gtw | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1 || true)"
+          echo "gtw requires ${max:-<no glibc symbols>}"
+          if [ -z "$max" ] || ! dpkg --compare-versions "${max#GLIBC_}" le 2.36; then
+            echo "::error::gtw requires $max; Debian 12 ships glibc 2.36" >&2
+            exit 1
+          fi
+      - name: Generate man page and completions
+        if: matrix.family == 'debian' || matrix.family == 'macos' || matrix.family == 'android'
+        run: |
+          ./scripts/build/manpages.sh artifacts
+          ./scripts/build/completions.sh "$(pwd)/artifacts"
+      - name: Package archive (Debian/macOS/Android)
+        if: matrix.family == 'debian' || matrix.family == 'macos' || matrix.family == 'android'
+        shell: bash
+        run: |
+          set -euo pipefail
+          platform="${{ matrix.platform }}"
+          case "${{ matrix.family }}" in
+            debian)
+              arch="${platform%-linux}"
+              root="gtw-debian-12-${arch}"
+              binary="target/release/gtw"
+              ;;
+            macos)
+              root="gtw-${platform}"
+              binary="target/release/gtw"
+              ;;
+            android)
+              root="gtw-${platform}"
+              binary="target/aarch64-linux-android/release/gtw"
+              ;;
+          esac
+          mkdir -p release-assets "$root/bin" "$root/man/man1" "$root/completions"
+          cp "$binary" "$root/bin/gtw"
+          cp artifacts/man/*.1 "$root/man/man1/"
+          cp artifacts/completions/* "$root/completions/"
+          cp LICENSE "$root/"
+          cp install.sh uninstall.sh "$root/"
+          tar czf "release-assets/${root}.tar.gz" "$root"
+      - name: Stage rootfs tree
+        if: matrix.family == 'debian'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stage/usr/bin \
+            stage/usr/share/man/man1 \
+            stage/usr/share/bash-completion/completions \
+            stage/usr/share/zsh/site-functions \
+            stage/usr/share/fish/vendor_completions.d \
+            stage/usr/share/elvish/lib \
+            stage/usr/share/powershell/Modules \
+            stage/usr/share/licenses/gtw
+          cp target/release/gtw stage/usr/bin/
+          cp artifacts/man/*.1 stage/usr/share/man/man1/
+          cp artifacts/completions/gtw.bash stage/usr/share/bash-completion/completions/gtw
+          cp artifacts/completions/_gtw stage/usr/share/zsh/site-functions/_gtw
+          cp artifacts/completions/gtw.fish stage/usr/share/fish/vendor_completions.d/
+          cp artifacts/completions/gtw.elv stage/usr/share/elvish/lib/
+          cp artifacts/completions/gtw.ps1 stage/usr/share/powershell/Modules/
+          cp LICENSE stage/usr/share/licenses/gtw/
+      - name: Build Debian package
+        if: matrix.family == 'debian'
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb_arch="$(dpkg --print-architecture)"
+          case "${{ matrix.platform }}" in
+            x86_64-linux) [ "$deb_arch" = "amd64" ] || exit 1 ;;
+            aarch64-linux) [ "$deb_arch" = "arm64" ] || exit 1 ;;
+          esac
+          ./scripts/build/debian-deb.sh "${{ needs.tag.outputs.version }}" "$deb_arch" stage \
+            "release-assets/gtw_${version}_${deb_arch}.deb"
+          ls -lh release-assets/*.deb
+        env:
+          version: ${{ needs.tag.outputs.version }}
+      - name: Build RPM package
+        if: matrix.family == 'debian'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rpm_arch="$(rpmbuild --eval '%{_target_cpu}')"
+          rpmbuild -bb \
+            --define "_topdir $PWD/rpmbuild" \
+            --define "gtw_version ${{ needs.tag.outputs.version }}" \
+            --define "gtw_staging $PWD/stage" \
+            --define "gtw_changelog_date $(date -u +'%a %b %d %Y')" \
+            dist/rpm/gtw.spec
+          cp rpmbuild/RPMS/*/*.rpm \
+            "release-assets/gtw-${{ needs.tag.outputs.version }}.${rpm_arch}.rpm"
+      - name: Build Arch Linux package
+        if: matrix.family == 'arch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          arch="x86_64"
+          ./scripts/build/arch-in-container.sh x86_64-linux-arch \
+            "${{ needs.tag.outputs.version }}" "$arch"
+      - name: Build Termux .deb
+        if: matrix.family == 'android'
+        run: |
+          set -euo pipefail
+          version="${{ needs.tag.outputs.version }}"
+          prefix="data/data/com.termux/files/usr"
+          pkg="termux-pkg"
+          rm -rf "$pkg"
+          mkdir -p "$pkg/DEBIAN" "$pkg/$prefix/bin" "$pkg/$prefix/share/man/man1"
+          cp target/aarch64-linux-android/release/gtw "$pkg/$prefix/bin/gtw"
+          cp artifacts/man/gtw.1 "$pkg/$prefix/share/man/man1/gtw.1"
+          chmod 0755 "$pkg/$prefix/bin/gtw"
+          installed_size="$(du -sk "$pkg/$prefix" | cut -f1)"
+          cat > "$pkg/DEBIAN/control" <<EOF
+          Package: gtw
+          Version: ${version}
+          Architecture: aarch64
+          Maintainer: prjctimg <prjctimg@outlook.com>
+          Installed-Size: ${installed_size}
+          Homepage: https://github.com/craftty-org/gtw
+          Description: Wikipedia in the terminal with cached reading and rich media.
+          EOF
+          dpkg-deb --build --root-owner-group "$pkg" "release-assets/gtw-android-${version}-aarch64.deb"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-assets-${{ matrix.platform }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  release:
+    needs: [tag, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-assets-*
+          merge-multiple: true
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(gtw-*.tar.gz gtw_*.deb gtw-android-*.deb gtw-*.rpm gtw-*.pkg.tar.zst gtw-*.apk)
+          [ ${#assets[@]} -gt 0 ] || { echo "::error::no release assets" >&2; exit 1; }
+          sha256sum "${assets[@]}" > checksums.txt
+          cat checksums.txt
+      - name: Publish nightly release
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: craftty-org/gtw
+          token: ${{ secrets.CRAFTTY_REPO_TOKEN }}
+          tag_name: nightly
+          name: gtw nightly
+          prerelease: true
+          generate_release_notes: false
+          overwrite_files: true
+          files: |
+            gtw-*.tar.gz
+            gtw_*.deb
+            gtw-android-*.deb
+            gtw-*.rpm
+            gtw-*.pkg.tar.zst
+            gtw-*.apk
+            checksums.txt
+
+  status-finish:
+    if: always()
+    needs: [status-start, tag, build, release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Determine conclusion
+        id: conclusion
+        run: |
+          results="${{ join(needs.*.result, ':') }}"
+          if echo "$results" | grep -q failure; then echo "conclusion=failure" >> "$GITHUB_OUTPUT"
+          elif echo "$results" | grep -q cancelled; then echo "conclusion=cancelled" >> "$GITHUB_OUTPUT"
+          else echo "conclusion=success" >> "$GITHUB_OUTPUT"; fi
+      - name: Record run finish
+        run: |
+          node scripts/status/record-run.mjs --repo "$TARGET_REPO" --workflow "$STATUS_WORKFLOW" --run-id "${{ github.run_id }}" --run-number "${{ github.run_number }}" --event "${{ github.event.client_payload.event_name || 'repository_dispatch' }}" --ref "$TARGET_REF" --sha "$TARGET_SHA" --status completed --conclusion "${{ steps.conclusion.outputs.conclusion }}" --actor "${{ github.event.client_payload.actor || github.actor }}" --html-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Commit status
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add status/
+          git diff --cached --quiet && exit 0
+          git commit -m "status: $STATUS_WORKFLOW $TARGET_REPO@${TARGET_SHA::7} ${{ steps.conclusion.outputs.conclusion }} [skip ci]"
+          for i in 1 2 3; do git pull --rebase origin main && git push origin HEAD:main && break; sleep 5; done

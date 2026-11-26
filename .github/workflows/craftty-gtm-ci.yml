@@ -1,0 +1,135 @@
+name: "craftty: gtm ci"
+
+on:
+  repository_dispatch:
+    types: [gtm-ci]
+
+concurrency:
+  group: craftty-gtm-ci-${{ github.event.client_payload.sha || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  TARGET_REPO: craftty-org/gtm
+  TARGET_SHA: ${{ github.event.client_payload.sha }}
+  TARGET_REF: ${{ github.event.client_payload.ref }}
+  STATUS_WORKFLOW: gtm-ci
+
+jobs:
+  status-start:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Record run start
+        run: |
+          node scripts/status/record-run.mjs \
+            --repo "$TARGET_REPO" \
+            --workflow "$STATUS_WORKFLOW" \
+            --run-id "${{ github.run_id }}" \
+            --run-number "${{ github.run_number }}" \
+            --event "${{ github.event.client_payload.event_name || 'repository_dispatch' }}" \
+            --ref "$TARGET_REF" \
+            --sha "$TARGET_SHA" \
+            --status in_progress \
+            --actor "${{ github.event.client_payload.actor || github.actor }}" \
+            --html-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Commit status
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add status/
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "status: $STATUS_WORKFLOW $TARGET_REPO@${TARGET_SHA::7} start [skip ci]"
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push origin HEAD:main && break
+            sleep 5
+          done
+
+  check:
+    needs: status-start
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+    env:
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'false'
+      VERGEN_GIT_SHA: ${{ github.event.client_payload.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: craftty-org/gtm
+          ref: ${{ github.event.client_payload.sha }}
+          fetch-depth: 0
+      - name: Check crate version alignment
+        run: bash scripts/build/check-versions.sh
+      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install ALSA headers (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets --features gtm/mpris,gtmd/mpris,gtmd/youtube -- -D warnings
+      - run: cargo test --workspace --no-fail-fast --features gtm/mpris,gtmd/mpris,gtmd/youtube
+
+  pulseaudio:
+    needs: status-start
+    runs-on: ubuntu-latest
+    env:
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'false'
+      VERGEN_GIT_SHA: ${{ github.event.client_payload.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: craftty-org/gtm
+          ref: ${{ github.event.client_payload.sha }}
+          fetch-depth: 0
+      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install ALSA headers (Linux)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - run: cargo clippy --workspace --all-targets --features gtm/mpris,gtm/pulseaudio,gtmd/mpris,gtmd/youtube,gtmd/pulseaudio -- -D warnings
+      - run: cargo test --workspace --features pulseaudio,gtm/mpris,gtmd/mpris,gtmd/youtube --no-fail-fast
+
+  status-finish:
+    if: always()
+    needs: [status-start, check, pulseaudio]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Determine conclusion
+        id: conclusion
+        run: |
+          result="${{ needs.check.result }}:${{ needs.pulseaudio.result }}"
+          if echo "$result" | grep -q failure; then echo "conclusion=failure" >> "$GITHUB_OUTPUT"
+          elif echo "$result" | grep -q cancelled; then echo "conclusion=cancelled" >> "$GITHUB_OUTPUT"
+          else echo "conclusion=success" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Record run finish
+        run: |
+          node scripts/status/record-run.mjs \
+            --repo "$TARGET_REPO" \
+            --workflow "$STATUS_WORKFLOW" \
+            --run-id "${{ github.run_id }}" \
+            --run-number "${{ github.run_number }}" \
+            --event "${{ github.event.client_payload.event_name || 'repository_dispatch' }}" \
+            --ref "$TARGET_REF" \
+            --sha "$TARGET_SHA" \
+            --status completed \
+            --conclusion "${{ steps.conclusion.outputs.conclusion }}" \
+            --actor "${{ github.event.client_payload.actor || github.actor }}" \
+            --html-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Commit status
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add status/
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "status: $STATUS_WORKFLOW $TARGET_REPO@${TARGET_SHA::7} ${{ steps.conclusion.outputs.conclusion }} [skip ci]"
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push origin HEAD:main && break
+            sleep 5
+          done

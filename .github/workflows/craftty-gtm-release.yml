@@ -1,0 +1,990 @@
+name: "craftty: gtm release"
+
+on:
+  repository_dispatch:
+    types: [gtm-release]
+
+concurrency:
+  group: craftty-gtm-release-${{ github.event.client_payload.event_name || 'dispatch' }}-${{ github.event.client_payload.ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'false'
+  NODE_OPTIONS: --use-system-ca
+  TARGET_REPO: craftty-org/gtm
+  TARGET_SHA: ${{ github.event.client_payload.sha }}
+  TARGET_REF: ${{ github.event.client_payload.ref }}
+  STATUS_WORKFLOW: gtm-release
+
+jobs:
+
+  status-start:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Record run start
+        run: |
+          node scripts/status/record-run.mjs \
+            --repo "$TARGET_REPO" --workflow "$STATUS_WORKFLOW" \
+            --run-id "${{ github.run_id }}" --run-number "${{ github.run_number }}" \
+            --event "${{ github.event.client_payload.event_name || 'repository_dispatch' }}" \
+            --ref "$TARGET_REF" --sha "$TARGET_SHA" \
+            --status in_progress --actor "${{ github.event.client_payload.actor || github.actor }}" \
+            --html-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Commit status
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add status/
+          git diff --cached --quiet && exit 0
+          git commit -m "status: $STATUS_WORKFLOW $TARGET_REPO@${TARGET_SHA::7} start [skip ci]"
+          for i in 1 2 3; do git pull --rebase origin main && git push origin HEAD:main && break; sleep 5; done
+  tag:
+    needs: status-start
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.set-tag.outputs.tag }}
+      version: ${{ steps.set-tag.outputs.version }}
+      nightly: ${{ steps.set-tag.outputs.nightly }}
+      skip: ${{ steps.set-tag.outputs.skip }}
+      prev_nightly: ${{ steps.prev-nightly.outputs.sha }}
+      matrix: ${{ steps.build-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout gtm
+        uses: actions/checkout@v7
+        with:
+          repository: craftty-org/gtm
+          ref: ${{ github.event.client_payload.sha }}
+          fetch-depth: 0
+          token: ${{ secrets.CRAFTTY_REPO_TOKEN }}
+
+      - name: Checkout automata scripts
+        uses: actions/checkout@v7
+        with:
+          path: automata
+          ref: main
+
+      - name: Derive tag
+        id: set-tag
+        # These arrive as environment variables rather than `${{ }}`
+        # interpolation. Interpolating them into the script text puts a commit
+        # message into shell source, where a backtick or `$(` in it is command
+        # substitution: any message containing a backtick turns this step into
+        # a syntax error, and one arriving from a pull request is arbitrary
+        # input executed in a job that holds release credentials.
+        env:
+          EVENT_NAME: ${{ github.event.client_payload.event_name }}
+          INPUT_RELEASE_TYPE: ${{ github.event.client_payload.inputs.release_type }}
+          INPUT_VERSION: ${{ github.event.client_payload.inputs.version }}
+          REF: ${{ github.event.client_payload.ref }}
+          COMMIT_MESSAGE: ${{ github.event.client_payload.commit_message }}
+        run: |
+          short_sha="${TARGET_SHA::7}"
+          manifest_version="$(grep -m1 '^version = ' Cargo.toml | sed 's/^version = "\(.*\)"/\1/')"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            if [[ "$INPUT_RELEASE_TYPE" == "nightly" ]]; then
+              tag="nightly"
+              version="${manifest_version}+${short_sha}+nightly"
+              nightly="true"
+            else
+              version="$INPUT_VERSION"
+              if [[ -z "$version" ]]; then
+                echo "::error::version input is required for stable releases" >&2
+                exit 1
+              fi
+              tag="v${version}"
+              nightly="false"
+            fi
+          elif [[ "$REF" == "refs/heads/dev" ]]; then
+            if grep -q "\[skip nightly\]" <<<"$COMMIT_MESSAGE"; then
+              echo "::notice::Skipping nightly — [skip nightly] in commit message"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "tag=nightly" >> "$GITHUB_OUTPUT"
+              echo "version=0.0.0" >> "$GITHUB_OUTPUT"
+              echo "nightly=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            tag="nightly"
+            version="${manifest_version}+${short_sha}+nightly"
+            nightly="true"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#v}"
+            nightly="false"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "nightly=${nightly}" >> "$GITHUB_OUTPUT"
+
+      - name: Build target matrix
+        id: build-matrix
+        # The matrix cannot be filtered in the workflow file itself: GitHub
+        # evaluates `strategy.matrix` before any step has run, so there is no
+        # `nightly` flag to branch on there. It is computed here instead, where
+        # the flag is already known, and the `build` job reads it back with
+        # `fromJSON`.
+        #
+        # A nightly builds only the two targets the maintainer actually tests
+        # on — Debian 12 arm64 and Termux. The other six are kept in the list
+        # below and are still built for a stable release, so re-enabling one is
+        # a one-word edit to `nightly_keep` and nothing else.
+        env:
+          NIGHTLY: ${{ steps.set-tag.outputs.nightly }}
+        run: |
+          set -euo pipefail
+          # jq ships in the GitHub runner image, but this step is the only
+          # thing between a successful checkout and a failed release, so the
+          # dependency is made explicit rather than assumed.
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y jq
+          fi
+          all='[
+            {"os":"ubuntu-22.04","platform":"x86_64-linux","container":"debian:12","family":"debian","link_override":"-C linker=gcc","mold_arg":"-C link-arg=-fuse-ld=mold"},
+            {"os":"ubuntu-24.04-arm","platform":"aarch64-linux","container":"debian:12","family":"debian","link_override":"-C linker=gcc","mold_arg":"-C link-arg=-fuse-ld=mold"},
+            {"os":"macos-latest","platform":"aarch64-darwin","container":null,"family":"macos","link_override":null,"mold_arg":null},
+            {"os":"macos-15-intel","platform":"x86_64-darwin","container":null,"family":"macos","link_override":null,"mold_arg":null},
+            {"os":"ubuntu-latest","platform":"aarch64-android","container":null,"family":"android","link_override":null,"mold_arg":null},
+            {"os":"ubuntu-22.04","platform":"x86_64-linux-arch","container":"archlinux:latest","family":"arch","link_override":"-C linker=gcc","mold_arg":"-C link-arg=-fuse-ld=mold"},
+            {"os":"ubuntu-24.04-arm","platform":"aarch64-linux-arch","container":null,"family":"arch-arm","link_override":"-C linker=gcc","mold_arg":"-C link-arg=-fuse-ld=mold"},
+            {"os":"ubuntu-22.04","platform":"x86_64-linux-musl","container":null,"family":"musl","link_override":"-C linker=gcc","mold_arg":"-C link-arg=-fuse-ld=mold"},
+            {"os":"ubuntu-24.04-arm","platform":"aarch64-linux-musl","container":null,"family":"musl","link_override":"-C linker=gcc","mold_arg":"-C link-arg=-fuse-ld=mold"},
+            {"os":"windows-latest","platform":"x86_64-windows","container":null,"family":"windows","link_override":null,"mold_arg":null}
+          ]'
+          # Nightly targets. Debian 12 arm64 is the maintainer's test machine and
+          # Termux is the phone. Add a platform here to build it on nightlies.
+          nightly_keep='["aarch64-linux","aarch64-android"]'
+          if [[ "$NIGHTLY" == "true" ]]; then
+            matrix="$(jq -c --argjson keep "$nightly_keep" \
+              '[.[] | select(.platform as $p | $keep | index($p))]' <<<"$all")"
+          else
+            matrix="$(jq -c '.' <<<"$all")"
+          fi
+          count="$(jq 'length' <<<"$matrix")"
+          if [[ "$count" -eq 0 ]]; then
+            echo "::error::nightly_keep matched no platform" >&2
+            exit 1
+          fi
+          echo "building $count target(s): $(jq -r '[.[].platform]|join(", ")' <<<"$matrix")"
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release version
+        if: steps.set-tag.outputs.skip != 'true'
+        run: |
+          version="${{ steps.set-tag.outputs.version }}"
+          if ! [[ "$version" =~ ^[0-9][0-9A-Za-z.+~]*$ ]]; then
+            echo "::error::invalid release version '$version' — must start with a digit and contain only [0-9A-Za-z.+~]" >&2
+            exit 1
+          fi
+
+      - name: Validate crate version alignment
+        if: steps.set-tag.outputs.skip != 'true'
+        run: bash scripts/build/check-versions.sh
+
+      - name: Capture previous nightly SHA
+        if: steps.set-tag.outputs.skip != 'true'
+        id: prev-nightly
+        run: |
+          prev="$(git rev-parse refs/tags/nightly 2>/dev/null || echo '')"
+          echo "sha=${prev}" >> "$GITHUB_OUTPUT"
+
+      - name: Move tag to build commit
+        if: steps.set-tag.outputs.skip != 'true'
+        run: |
+          git config user.name "prjctimg"
+          git config user.email "prjctimg@outlook.com"
+          tag="${{ steps.set-tag.outputs.tag }}"
+          git tag -f "${tag}"
+          git push "https://x-access-token:${{ secrets.CRAFTTY_REPO_TOKEN }}@github.com/${TARGET_REPO}.git" "${tag}" --force
+
+  build:
+    needs: tag
+    if: needs.tag.outputs.skip != 'true'
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    env:
+      VERGEN_GIT_SHA: ${{ github.event.client_payload.sha }}
+      RUSTFLAGS: >-
+        ${{ contains(matrix.platform, 'musl') && '-C target-feature=-crt-static' || '' }}
+        ${{ matrix.link_override }}
+        ${{ matrix.mold_arg }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Computed in the `tag` job: a nightly builds only Debian 12 arm64 and
+        # Termux, a stable release builds every target. See `Build target matrix`.
+        include: ${{ fromJSON(needs.tag.outputs.matrix) }}
+    steps:
+      - name: Bootstrap tooling (Debian 12 container)
+        if: matrix.container == 'debian:12'
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git pkg-config \
+            libasound2-dev pandoc dpkg-dev rpm zstd libarchive-tools \
+            build-essential cmake liblzma-dev clang lld mold
+
+      - name: Install Rust (Debian 12 container)
+        if: matrix.container == 'debian:12'
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Bootstrap tooling (Arch Linux container)
+        if: matrix.container == 'archlinux:latest'
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            base-devel rust pandoc alsa-lib cmake clang lld mold git \
+            libarchive zstd
+
+      - uses: actions/checkout@v7
+        with:
+          repository: craftty-org/gtm
+          ref: ${{ github.event.client_payload.sha }}
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.platform }}
+
+      - name: Install system dependencies (Linux)
+        if: startsWith(matrix.os, 'ubuntu') && matrix.container == null && matrix.family == 'debian'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pandoc rpm zstd libarchive-tools clang lld mold
+
+      - name: Install system dependencies (macOS)
+        if: matrix.family == 'macos'
+        run: brew install pkg-config pandoc
+
+      - name: Install system dependencies (Windows)
+        if: matrix.family == 'windows'
+        shell: bash
+        run: choco install pandoc -y
+
+      - name: Install pandoc (Android build)
+        if: matrix.family == 'android'
+        run: sudo apt-get update && sudo apt-get install -y pandoc
+
+
+      - name: Build musl binaries + packages (Alpine container)
+        if: matrix.family == 'musl'
+        run: |
+          platform="${{ matrix.platform }}"
+          arch="${platform%-linux-musl}"
+          docker run --rm \
+            -v "$PWD":/work \
+            -w /work \
+            -e HOME=/root \
+            -e VERGEN_GIT_SHA="$VERGEN_GIT_SHA" \
+            alpine:3.22 \
+            /bin/sh -c "apk add --no-cache bash && /bin/bash /work/scripts/build/musl-in-container.sh \
+              ${platform} ${{ needs.tag.outputs.version }} ${arch}"
+
+      - name: Build Arch Linux binaries + packages (container)
+        if: matrix.family == 'arch-arm'
+        run: |
+          docker run --rm \
+            -v "$PWD":/work \
+            -w /work \
+            -e HOME=/root \
+            -e VERGEN_GIT_SHA="$VERGEN_GIT_SHA" \
+            lfdevs/archlinuxarm:base-devel \
+            /bin/bash -c "
+              set -euo pipefail
+              echo 'DisableSandboxFilesystem' >> /etc/pacman.conf &&
+              pacman-key --init &&
+              pacman-key --populate archlinuxarm &&
+              # The mirrors are reached by name, so a transient DNS failure reds
+              # this target for no reason. Retried for the same reason as the
+              # script below, which repeats these two calls.
+              for attempt in 1 2 3 4 5; do
+                pacman -Syu --noconfirm && break
+                [ \"\$attempt\" -lt 5 ] || { echo '::error::pacman -Syu failed after 5 attempts' >&2; exit 1; }
+                echo \"::warning::pacman -Syu failed (attempt \${attempt}/5); retrying in 10s\" >&2
+                sleep 10
+              done &&
+              curl -L -o /tmp/pandoc.tar.gz https://github.com/jgm/pandoc/releases/download/3.1.11.1/pandoc-3.1.11.1-linux-arm64.tar.gz &&
+              tar -xzf /tmp/pandoc.tar.gz -C /usr/bin --strip-components=2 &&
+              chmod +x /usr/bin/pandoc &&
+              /bin/bash /work/scripts/build/arch-in-container.sh aarch64-linux-arch ${{ needs.tag.outputs.version }} aarch64
+            "
+
+      - name: Install Android NDK + tools
+        if: matrix.family == 'android'
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27b
+
+      - name: Install Rust Android target
+        if: matrix.family == 'android'
+        run: |
+          rustup target add aarch64-linux-android
+          cargo install cargo-ndk
+
+      - name: Build termux-elf-cleaner
+        if: matrix.family == 'android'
+        run: |
+          git clone --depth 1 --branch v3.0.1 https://github.com/termux/termux-elf-cleaner.git
+          cmake -S termux-elf-cleaner -B termux-elf-cleaner/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build termux-elf-cleaner/build -j
+
+      - name: Build release binaries
+        if: matrix.family != 'android' && matrix.family != 'musl' && matrix.family != 'arch-arm' && matrix.family != 'windows'
+        run: cargo build --release -p gtm --features mpris && cargo build --release -p gtmd --features mpris,youtube
+
+      - name: Build release binaries (Windows)
+        if: matrix.family == 'windows'
+        shell: bash
+        run: cargo build --release -p gtm && cargo build --release -p gtmd
+
+      - name: Assert glibc compatibility (<= 2.36)
+        if: matrix.family == 'debian'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for bin in target/release/gtm target/release/gtmd; do
+            max="$(objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1 || true)"
+            echo "$bin requires ${max:-<no glibc symbols>}"
+            if [ -z "$max" ] || ! dpkg --compare-versions "${max#GLIBC_}" le 2.36; then
+              echo "::error::$bin requires $max; Debian 12 ships glibc 2.36" >&2
+              exit 1
+            fi
+          done
+
+      - name: Build Android release binaries
+        if: matrix.family == 'android'
+        run: |
+          CARGO_INCREMENTAL=0 cargo ndk -t arm64-v8a -P 27 \
+            build --release --no-default-features --features pulseaudio
+
+      - name: Clean Android ELF sections
+        if: matrix.family == 'android'
+        run: |
+          termux-elf-cleaner/build/termux-elf-cleaner target/aarch64-linux-android/release/gtmd
+          termux-elf-cleaner/build/termux-elf-cleaner target/aarch64-linux-android/release/gtm
+
+      - name: Generate manpages (pandoc)
+        if: matrix.family != 'musl' && matrix.family != 'arch-arm'
+        shell: bash
+        run: ./scripts/build/manpages.sh artifacts
+
+      - name: Install host build deps for completions
+        # The Android job cross-compiles through the NDK, so it never needed
+        # ALSA headers. Generating completions needs a *host* build of the
+        # binaries, and `rodio` is not optional, so that build wants
+        # libasound2-dev. The other families already installed it earlier.
+        if: matrix.family == 'android'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - name: Generate shell completions
+        # musl and arch-arm generate inside their build containers, which run
+        # the same script. Android is here rather than in its ndk build because
+        # the completions are architecture-independent: they come from a host
+        # build, and the ndk build only produces the libraries. Its archive
+        # copies this directory, so skipping it left the copy with nothing.
+        if: matrix.family != 'musl' && matrix.family != 'arch-arm'
+        shell: bash
+        run: |
+          if [[ "${{ matrix.family }}" == "windows" ]]; then
+            cargo build --release --quiet -p gtm
+            cargo build --release --quiet -p gtmd
+          else
+            cargo build --release --quiet -p gtm --features mpris
+            cargo build --release --quiet -p gtmd --features mpris,youtube
+          fi
+          ./scripts/build/completions.sh "$(pwd)/artifacts"
+
+      - name: Package complete archive (desktop)
+        if: matrix.family == 'debian' || matrix.family == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          platform="${{ matrix.platform }}"
+          if [[ "${{ matrix.family }}" == "debian" ]]; then
+            arch="${platform%-linux}"
+            root="gtm-debian-12-${arch}"
+          else
+            root="gtm-${platform}"
+          fi
+          mkdir -p release-assets \
+            "$root/bin" "$root/man/man1" "$root/completions" \
+            "$root/systemd" "$root/desktop" "$root/icons"
+          cp target/release/gtm  "$root/bin/"
+          cp target/release/gtmd "$root/bin/"
+          cp artifacts/man/*.1        "$root/man/man1/"
+          cp artifacts/completions/*  "$root/completions/"
+          cp dist/gtmd.service  "$root/systemd/"
+          cp dist/gtm.desktop   "$root/desktop/"
+          cp assets/gtm.svg     "$root/icons/"
+          cp LICENSE            "$root/"
+          cp install.sh uninstall.sh         "$root/"
+          tar czf "release-assets/${root}.tar.gz" "$root"
+
+      - name: Package complete archive (Arch Linux)
+        if: matrix.family == 'arch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          platform="${{ matrix.platform }}"
+          arch="${platform%-linux-arch}"
+          root="gtm-arch-${arch}"
+          mkdir -p release-assets \
+            "$root/bin" "$root/man/man1" "$root/completions" \
+            "$root/systemd" "$root/desktop" "$root/icons"
+          cp target/release/gtm  "$root/bin/"
+          cp target/release/gtmd "$root/bin/"
+          cp artifacts/man/*.1        "$root/man/man1/"
+          cp artifacts/completions/*  "$root/completions/"
+          cp dist/gtmd.service  "$root/systemd/"
+          cp dist/gtm.desktop   "$root/desktop/"
+          cp assets/gtm.svg     "$root/icons/"
+          cp LICENSE            "$root/"
+          cp install.sh uninstall.sh         "$root/"
+          tar czf "release-assets/gtm-arch-${arch}.tar.gz" "$root"
+
+      - name: Package complete archive (Android)
+        if: matrix.family == 'android'
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="gtm-aarch64-android"
+          mkdir -p release-assets "$root/bin" "$root/man/man1" "$root/completions"
+          cp target/aarch64-linux-android/release/gtm  "$root/bin/"
+          cp target/aarch64-linux-android/release/gtmd "$root/bin/"
+          cp artifacts/man/*.1       "$root/man/man1/"
+          cp artifacts/completions/* "$root/completions/"
+          cp install.sh uninstall.sh              "$root/"
+          tar czf "release-assets/gtm-aarch64-android.tar.gz" "$root"
+
+      - name: Package complete archive (Windows)
+        if: matrix.family == 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          platform="${{ matrix.platform }}"
+          root="gtm-${platform}"
+          mkdir -p release-assets "$root/bin" "$root/man/man1" "$root/completions"
+          cp target/release/gtm.exe  "$root/bin/"
+          cp target/release/gtmd.exe "$root/bin/"
+          cp artifacts/man/*.1       "$root/man/man1/" 2>/dev/null || true
+          cp artifacts/completions/* "$root/completions/" 2>/dev/null || true
+          cp LICENSE "$root/"
+          cp install.sh uninstall.sh "$root/" 2>/dev/null || true
+          (cd release-assets && 7z a "gtm-${platform}.zip" "../${root}" >/dev/null)
+
+      - name: Build Debian/Ubuntu .deb
+        if: matrix.family == 'debian'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.tag.outputs.version }}"
+          cargo install cargo-deb --locked --version 3.7.0
+          mkdir -p gtm/deb-assets/man gtm/deb-assets/completions
+          cp artifacts/man/* gtm/deb-assets/man/
+          cp artifacts/completions/* gtm/deb-assets/completions/
+          cp target/release/gtmd gtm/deb-assets/gtmd
+          cp dist/gtmd.service gtm/deb-assets/
+          cp dist/gtm.desktop gtm/deb-assets/
+          cp assets/gtm.svg gtm/deb-assets/
+          cargo deb --package gtm
+          deb_arch="$(dpkg --print-architecture)"
+          case "${{ matrix.platform }}" in
+            x86_64-linux) [ "$deb_arch" = "amd64" ] || { echo "::error::expected amd64 for ${{ matrix.platform }}, got $deb_arch" >&2; exit 1; } ;;
+            aarch64-linux) [ "$deb_arch" = "arm64" ] || { echo "::error::expected arm64 for ${{ matrix.platform }}, got $deb_arch" >&2; exit 1; } ;;
+          esac
+          for deb in target/debian/gtm_*.deb; do
+            echo "Built deb: $(basename "$deb") (arch $deb_arch) for ${{ matrix.platform }}"
+            mv "$deb" "release-assets/gtm_${version}_${deb_arch}.deb"
+          done
+          rm -rf gtm/deb-assets
+          ls -lh release-assets/*.deb
+
+      - name: Stage rootfs tree (RPM)
+        if: matrix.family == 'debian'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stage/usr/bin \
+            stage/usr/lib/systemd/user \
+            stage/usr/share/man/man1 \
+            stage/usr/share/bash-completion/completions \
+            stage/usr/share/zsh/site-functions \
+            stage/usr/share/fish/vendor_completions.d \
+            stage/usr/share/elvish/lib \
+            stage/usr/share/powershell/Modules \
+            stage/usr/share/applications \
+            stage/usr/share/icons/hicolor/scalable/apps \
+            stage/usr/share/licenses/gtm
+          cp target/release/gtm  stage/usr/bin/
+          cp target/release/gtmd stage/usr/bin/
+          cp dist/gtmd.service stage/usr/lib/systemd/user/
+          cp artifacts/man/*.1 stage/usr/share/man/man1/
+          cp artifacts/completions/gtm.bash  stage/usr/share/bash-completion/completions/gtm
+          cp artifacts/completions/gtmd.bash stage/usr/share/bash-completion/completions/gtmd
+          cp artifacts/completions/_gtm  stage/usr/share/zsh/site-functions/_gtm
+          cp artifacts/completions/_gtmd stage/usr/share/zsh/site-functions/_gtmd
+          cp artifacts/completions/gtm.fish  stage/usr/share/fish/vendor_completions.d/
+          cp artifacts/completions/gtmd.fish stage/usr/share/fish/vendor_completions.d/
+          cp artifacts/completions/gtm.elv  stage/usr/share/elvish/lib/
+          cp artifacts/completions/gtmd.elv stage/usr/share/elvish/lib/
+          cp artifacts/completions/gtm.ps1  stage/usr/share/powershell/Modules/
+          cp artifacts/completions/gtmd.ps1 stage/usr/share/powershell/Modules/
+          cp dist/gtm.desktop stage/usr/share/applications/
+          cp assets/gtm.svg stage/usr/share/icons/hicolor/scalable/apps/
+          cp LICENSE stage/usr/share/licenses/gtm/
+
+      - name: Build Fedora/RHEL .rpm
+        if: matrix.family == 'debian'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.tag.outputs.version }}"
+          rpm_arch="$(rpmbuild --eval '%{_target_cpu}')"
+          rpmbuild -bb \
+            --define "_topdir $PWD/rpmbuild" \
+            --define "gtm_version $version" \
+            --define "gtm_staging $PWD/stage" \
+            --define "gtm_changelog_date $(date -u +'%a %b %d %Y')" \
+            dist/rpm/gtm.spec
+          cp rpmbuild/RPMS/*/*.rpm "release-assets/gtm-${version}.${rpm_arch}.rpm"
+
+      - name: Stage rootfs tree (Arch .pkg.tar.zst)
+        if: matrix.family == 'arch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stage/usr/bin \
+            stage/usr/lib/systemd/user \
+            stage/usr/share/man/man1 \
+            stage/usr/share/bash-completion/completions \
+            stage/usr/share/zsh/site-functions \
+            stage/usr/share/fish/vendor_completions.d \
+            stage/usr/share/elvish/lib \
+            stage/usr/share/powershell/Modules \
+            stage/usr/share/applications \
+            stage/usr/share/icons/hicolor/scalable/apps \
+            stage/usr/share/licenses/gtm
+          cp target/release/gtm  stage/usr/bin/
+          cp target/release/gtmd stage/usr/bin/
+          cp dist/gtmd.service stage/usr/lib/systemd/user/
+          cp artifacts/man/*.1 stage/usr/share/man/man1/
+          cp artifacts/completions/gtm.bash  stage/usr/share/bash-completion/completions/gtm
+          cp artifacts/completions/gtmd.bash stage/usr/share/bash-completion/completions/gtmd
+          cp artifacts/completions/_gtm  stage/usr/share/zsh/site-functions/_gtm
+          cp artifacts/completions/_gtmd stage/usr/share/zsh/site-functions/_gtmd
+          cp artifacts/completions/gtm.fish  stage/usr/share/fish/vendor_completions.d/
+          cp artifacts/completions/gtmd.fish stage/usr/share/fish/vendor_completions.d/
+          cp artifacts/completions/gtm.elv  stage/usr/share/elvish/lib/
+          cp artifacts/completions/gtmd.elv stage/usr/share/elvish/lib/
+          cp artifacts/completions/gtm.ps1  stage/usr/share/powershell/Modules/
+          cp artifacts/completions/gtmd.ps1 stage/usr/share/powershell/Modules/
+          cp dist/gtm.desktop stage/usr/share/applications/
+          cp assets/gtm.svg stage/usr/share/icons/hicolor/scalable/apps/
+          cp LICENSE stage/usr/share/licenses/gtm/
+
+      - name: Build Arch Linux package
+        if: matrix.family == 'arch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          platform="${{ matrix.platform }}"
+          version="${{ needs.tag.outputs.version }}"
+          arch="${platform%-linux-arch}"
+          ./scripts/build/arch-pkg.sh "$version" "$arch" stage \
+            "release-assets/gtm-${version}-${arch}.pkg.tar.zst"
+
+      - name: Build Termux .deb packages
+        if: matrix.family == 'android'
+        run: |
+          pip install termux-create-package ruamel.yaml
+          # termux-create-package 0.12.0 probes for ruamel.yaml through
+          # `importlib.util` but only imports `importlib`. Python 3.14 on the
+          # current runner image no longer exposes the submodule implicitly,
+          # so every YAML manifest fails with a misleading "requires
+          # ruamel.yaml" error even though it is installed. Patch the installed
+          # entry point until the upstream fix lands.
+          python3 - "$(command -v termux-create-package)" <<'PY'
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          text = path.read_text()
+          if "import importlib.util" not in text:
+              text = text.replace(
+                  "import importlib\n",
+                  "import importlib\nimport importlib.util\n",
+                  1,
+              )
+              path.write_text(text)
+          PY
+          version="${{ needs.tag.outputs.version }}"
+          files="target/aarch64-linux-android/termux-pkg/files"
+          mkdir -p "$files/bin" "$files/share/man/man1"
+          cp target/aarch64-linux-android/release/gtmd "$files/bin/"
+          cp target/aarch64-linux-android/release/gtm  "$files/bin/"
+          cp artifacts/man/gtm.1 artifacts/man/gtmd.1 artifacts/man/gtmd-ipc.1 "$files/share/man/man1/"
+          termux-create-package \
+            --pkg-version "$version" \
+            --pkg-arch aarch64 \
+            dist/termux/gtm.yml
+          mv "gtm_${version}_aarch64.deb" "release-assets/gtm-android-${version}-aarch64.deb"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-assets-${{ matrix.platform }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  release:
+    needs: [tag, build]
+    if: needs.tag.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout gtm
+        uses: actions/checkout@v7
+        with:
+          repository: craftty-org/gtm
+          ref: ${{ github.event.client_payload.sha }}
+          fetch-depth: 0
+          token: ${{ secrets.CRAFTTY_REPO_TOKEN }}
+
+      - name: Checkout automata scripts
+        uses: actions/checkout@v7
+        with:
+          path: automata
+          ref: main
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-assets-*
+          merge-multiple: true
+
+      - name: Generate release-notes draft
+        env:
+          GH_TOKEN: ${{ secrets.CRAFTTY_REPO_TOKEN }}
+        run: |
+          tag="${{ needs.tag.outputs.tag }}"
+          version="${{ needs.tag.outputs.version }}"
+          if [[ "${{ needs.tag.outputs.nightly }}" == "true" ]]; then
+            prev_tag="${{ needs.tag.outputs.prev_nightly }}"
+            if [[ -z "$prev_tag" || "$prev_tag" == "${{ github.event.client_payload.sha }}" ]] \
+               || ! git merge-base --is-ancestor "$prev_tag" HEAD 2>/dev/null; then
+              prev_tag="$(git rev-list --max-parents=0 HEAD)"
+            fi
+          else
+            prev_tag="$(git tag --sort=-v:refname | grep -E '^v[0-9]' | grep -v "^$tag$" | head -1)"
+            [[ -n "$prev_tag" ]] || prev_tag="$(git rev-list --max-parents=0 HEAD)"
+          fi
+          bash automata/scripts/release-notes.sh "${prev_tag}" "${{ github.event.client_payload.sha }}" "$version" release-notes.md
+          ls -l release-notes.md
+
+      - name: Print release asset manifest
+        run: |
+          echo "=== Release assets ==="
+          # A glob that matches nothing makes `ls` exit 2, and this step runs
+          # under `bash -e`, so the step failed even though every artifact had
+          # built. Suppressing stderr hides the message but not the status.
+          # The nightly matrix builds a subset of these formats, so at least one
+          # of the patterns is expected to be empty on any given run.
+          shopt -s nullglob
+          assets=(gtm-*.tar.gz *.deb *.rpm *.pkg.tar.zst *.apk)
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "(no artifacts found)"
+          else
+            ls -lh "${assets[@]}"
+          fi
+          echo
+          echo "Total: ${#assets[@]} files"
+
+      - name: Generate checksums
+        run: |
+          sha256sum gtm-* gtm_*.deb | tee checksums.txt
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          repository: craftty-org/gtm
+          token: ${{ secrets.CRAFTTY_REPO_TOKEN }}
+          tag_name: ${{ needs.tag.outputs.tag }}
+          name: ${{ needs.tag.outputs.version }}
+          draft: false
+          prerelease: ${{ needs.tag.outputs.nightly == 'true' }}
+          overwrite_files: true
+          body_path: release-notes.md
+          files: |
+            gtm-*.tar.gz
+            *.deb
+            *.rpm
+            *.pkg.tar.zst
+            *.apk
+            checksums.txt
+
+      - name: Prune stale nightly assets
+        if: needs.tag.outputs.nightly == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CRAFTTY_REPO_TOKEN }}
+        run: |
+          mapfile -t kept < <(
+            ls gtm-*.tar.gz *.deb *.rpm *.pkg.tar.zst *.apk \
+              checksums.txt release-notes.md 2>/dev/null | xargs -n1 basename
+          )
+          gh release view nightly --repo "$TARGET_REPO" --json assets -q '.assets[].name' 2>/dev/null \
+            | while IFS= read -r name; do
+                [ -n "$name" ] || continue
+                [[ " ${kept[*]} " == *" $name "* ]] && continue
+                gh release delete-asset nightly "$name" -y --repo "$TARGET_REPO" || true
+              done
+
+      - name: Force-publish nightly (draft guard)
+        if: always() && needs.tag.outputs.nightly == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CRAFTTY_REPO_TOKEN }}
+        run: |
+          # `releases/tags/nightly` is GET-only; the old PATCH against it 404'd
+          # on every run and the `|| echo` hid it. `gh release edit` looks the
+          # numeric id up first, which is what the REST API wants.
+          gh release edit nightly --draft=false --repo "$TARGET_REPO" || \
+            echo "::warning::could not un-draft nightly release"
+
+  bench:
+    needs: [tag, release]
+    # Stable releases only, which is a tag push or a manual stable dispatch.
+    #
+    # Bench pulls `gtm-debian-12-x86_64.tar.gz` out of the build artifacts, and
+    # a nightly no longer builds x86_64 — it builds the two targets the
+    # maintainer tests on. Left gated on the dev ref it would have failed on
+    # every push for a missing archive; left ungated it would have looked fine
+    # and measured an x86_64 GitHub runner rather than the hardware a nightly
+    # is for, at the cost of a Go build of cliamp per push.
+    #
+    # The old `github.event.client_payload.ref == 'refs/heads/dev' ||` clause is deliberately gone:
+    # every dev push *is* a nightly, so keeping it would have made this job
+    # unreachable now that nightlies are excluded.
+    if: needs.tag.outputs.skip != 'true' && needs.tag.outputs.nightly == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout gtm
+        uses: actions/checkout@v7
+        with:
+          repository: craftty-org/gtm
+          ref: ${{ github.event.client_payload.sha }}
+          fetch-depth: 0
+          token: ${{ secrets.CRAFTTY_REPO_TOKEN }}
+
+      - name: Checkout automata scripts
+        uses: actions/checkout@v7
+        with:
+          path: automata
+          ref: main
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-assets-*
+          merge-multiple: true
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq libasound2t64 || sudo apt-get install -y libasound2
+          sudo apt-get install -y libasound2-dev libogg-dev libvorbis-dev libflac-dev
+
+      - name: Install cliamp (reference player)
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+      - name: Build cliamp binary
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if go install github.com/bjarneo/cliamp@latest; then
+              exit 0
+            fi
+            echo "cliamp install attempt ${attempt} failed; retrying in 10s..."
+            sleep 10
+          done
+          echo "::error::could not install cliamp after 5 attempts" >&2
+          exit 1
+
+      - name: Extract gtm binaries from published archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -f gtm-debian-12-x86_64.tar.gz ] || { echo "::error::x86_64-linux archive not found (bench uses the Debian 12 glibc build)" >&2; exit 1; }
+          tar xzf gtm-debian-12-x86_64.tar.gz
+          mkdir -p bench-bins
+          cp gtm-debian-12-x86_64/bin/gtm gtm-debian-12-x86_64/bin/gtmd bench-bins/
+          chmod +x bench-bins/gtm bench-bins/gtmd
+          ls -l bench-bins/
+
+      - name: Collect benchmark results
+        shell: bash
+        env:
+          GTM_BIN: bench-bins/gtm
+          GTMD_BIN: bench-bins/gtmd
+          TARGET_SHA: ${{ github.event.client_payload.sha }}
+        run: |
+          set -euo pipefail
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+          ./scripts/bench/collect.sh "${{ needs.tag.outputs.version }}" "${{ github.event.client_payload.inputs.bench_seconds || '30' }}"
+
+      - name: Render BENCHMARK.md
+        shell: bash
+        run: ./scripts/bench/render.sh --tag "${{ needs.tag.outputs.version }}"
+
+      - name: Commit benchmark results back (dev only)
+        if: github.event.client_payload.ref == 'refs/heads/dev'
+        env:
+          GH_BOT_TOKEN: ${{ secrets.CRAFTTY_REPO_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          push_url="https://x-access-token:${GH_BOT_TOKEN}@github.com/${TARGET_REPO}.git"
+          attempt=0
+          while true; do
+            if git diff --cached --quiet; then
+              git add -f .bench/BENCHMARK.md .bench/stats.json assets/fixtures
+            fi
+            if git diff --cached --quiet; then
+              echo "no benchmark changes to commit"
+              exit 0
+            fi
+            # `[skip ci]` matters as much as the artifact: this commit is pushed
+            # with GITHUB_TOKEN, so GitHub's recursion guard refuses to start
+            # the CI workflow for it. The `pull_request` event for the moved PR
+            # head is still recorded, and lands as `action_required` with zero
+            # jobs — a red X in the UI for a commit that only rewrites
+            # BENCHMARK.md and stats.json. Skipping the run outright keeps the
+            # history clean and costs nothing, since there is no Rust here to
+            # verify. `[skip nightly]` is still needed: the release workflow
+            # reads it to avoid a nightly loop.
+            git commit -m "bench: results for ${{ needs.tag.outputs.version }} [skip nightly] [skip ci]" >/dev/null
+            if git push "https://x-access-token:${GH_BOT_TOKEN}@github.com/${TARGET_REPO}.git" HEAD:dev 2>/dev/null; then
+              break
+            fi
+            attempt=$((attempt + 1))
+            if [ "${attempt}" -ge 3 ]; then
+              echo "::error::could not push benchmark results after 3 attempts (concurrent run?)" >&2
+              exit 1
+            fi
+            sleep 5
+            git pull --rebase origin dev 2>/dev/null || true
+          done
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bench-results
+          path: |
+            .bench/BENCHMARK.md
+            .bench/stats.json
+          if-no-files-found: error
+
+  crates-io:
+    needs: [tag, build]
+    if: needs.tag.outputs.skip != 'true' && needs.tag.outputs.nightly == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: craftty-org/gtm
+          ref: ${{ github.event.client_payload.sha }}
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev
+
+      # Prefer OIDC trusted publishing; fall back to the CRATES_IO API token
+      # when the publisher config is missing on crates.io (the OIDC action
+      # fails with "No Trusted Publishing config found" in that case, and a
+      # stable release should not be blocked on the registry-side setup).
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+        continue-on-error: true
+
+      - name: Set crates.io token
+        run: |
+          if [ -n "${{ steps.auth.outputs.token }}" ]; then
+            echo "CARGO_REGISTRY_TOKEN=${{ steps.auth.outputs.token }}" >> "${GITHUB_ENV}"
+          elif [ -n "${{ secrets.CRATES_IO }}" ]; then
+            echo "CARGO_REGISTRY_TOKEN=${{ secrets.CRATES_IO }}" >> "${GITHUB_ENV}"
+          else
+            echo "::error::no crates.io credentials: trusted publishing unavailable and CRATES_IO secret unset" >&2
+            exit 1
+          fi
+
+      - name: Publish crates
+        # Both crates, in dependency order. Publishing only `gtm` left crates.io
+        # with a `gtmd 0.2.83` beside a `gtm 0.2.84`, so anyone depending on the
+        # daemon by version got a crate that could not resolve the library that
+        # was actually published. `gtmd` depends on `gtm`, so `gtm` goes first
+        # and the retry below covers the index not having caught up yet.
+        run: scripts/build/publish.sh
+
+
+
+
+  close-mentioned-issues:
+    needs: [tag, release]
+    if: needs.tag.outputs.skip != 'true' && needs.tag.outputs.nightly != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Close issues mentioned in release
+        env:
+          GH_TOKEN: ${{ secrets.CRAFTTY_BOT_TOKEN }}
+          REPO: craftty-org/gtm
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: node scripts/bot/close-mentioned-issues.mjs --repo "$REPO" --tag "$TAG"
+  status-finish:
+    if: always()
+    needs: [status-start, tag, build, release, bench, crates-io, close-mentioned-issues]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Determine conclusion
+        id: conclusion
+        run: |
+          # release is the key job; bench/crates-io may be skipped
+          r="${{ needs.release.result }}"
+          if [ "$r" = "success" ]; then echo "conclusion=success" >> "$GITHUB_OUTPUT"
+          elif [ "$r" = "skipped" ]; then
+            t="${{ needs.tag.result }}"
+            if [ "$t" = "success" ]; then echo "conclusion=success" >> "$GITHUB_OUTPUT"
+            else echo "conclusion=failure" >> "$GITHUB_OUTPUT"; fi
+          elif [ "$r" = "cancelled" ]; then echo "conclusion=cancelled" >> "$GITHUB_OUTPUT"
+          else echo "conclusion=failure" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Record run finish
+        run: |
+          node scripts/status/record-run.mjs \
+            --repo "$TARGET_REPO" --workflow "$STATUS_WORKFLOW" \
+            --run-id "${{ github.run_id }}" --run-number "${{ github.run_number }}" \
+            --event "${{ github.event.client_payload.event_name || 'repository_dispatch' }}" \
+            --ref "$TARGET_REF" --sha "$TARGET_SHA" \
+            --status completed --conclusion "${{ steps.conclusion.outputs.conclusion }}" \
+            --actor "${{ github.event.client_payload.actor || github.actor }}" \
+            --html-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Commit status
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add status/
+          git diff --cached --quiet && exit 0
+          git commit -m "status: $STATUS_WORKFLOW $TARGET_REPO@${TARGET_SHA::7} ${{ steps.conclusion.outputs.conclusion }} [skip ci]"
+          for i in 1 2 3; do git pull --rebase origin main && git push origin HEAD:main && break; sleep 5; done

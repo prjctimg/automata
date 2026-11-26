@@ -1,0 +1,81 @@
+name: "craftty-bot: stale"
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      repos:
+        description: "Comma-separated owner/repo list (default: craftty-org repos)"
+        required: false
+        type: string
+      dry_run:
+        description: "Dry run"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  STATUS_WORKFLOW: craftty-bot-stale
+  TARGET_REPO: craftty-org/automata
+
+jobs:
+  status-start:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Record run start
+        run: |
+          node scripts/status/record-run.mjs --repo "$TARGET_REPO" --workflow "$STATUS_WORKFLOW" --run-id "${{ github.run_id }}" --run-number "${{ github.run_number }}" --event "${{ github.event_name }}" --ref "${{ github.ref }}" --sha "${{ github.sha }}" --status in_progress --actor "${{ github.actor }}" --html-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Commit status
+        run: |
+          set -euo pipefail
+          git config user.name "craftty-bot"
+          git config user.email "craftty-bot@users.noreply.github.com"
+          git add status/
+          git diff --cached --quiet && exit 0
+          git commit -m "status: $STATUS_WORKFLOW start [skip ci]"
+          for i in 1 2 3; do git pull --rebase origin main && git push origin HEAD:main && break; sleep 5; done
+
+  stale:
+    needs: status-start
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run stale bot
+        env:
+          GH_TOKEN: ${{ secrets.CRAFTTY_BOT_TOKEN }}
+          REPOS: ${{ github.event.inputs.repos || 'craftty-org/gtm,craftty-org/gtw,craftty-org/gtm.nvim,craftty-org/gtm.docs,craftty-org/tuikit,craftty-org/xplora,craftty-org/learn_odin' }}
+          STALE_DAYS: "60"
+          CLOSE_DAYS: "14"
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: node scripts/bot/stale.mjs
+
+  status-finish:
+    if: always()
+    needs: [status-start, stale]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Determine conclusion
+        id: conclusion
+        run: |
+          r="${{ needs.stale.result }}"
+          if [ "$r" = "success" ]; then echo "conclusion=success" >> "$GITHUB_OUTPUT"
+          elif [ "$r" = "cancelled" ]; then echo "conclusion=cancelled" >> "$GITHUB_OUTPUT"
+          else echo "conclusion=failure" >> "$GITHUB_OUTPUT"; fi
+      - name: Record run finish
+        run: |
+          node scripts/status/record-run.mjs --repo "$TARGET_REPO" --workflow "$STATUS_WORKFLOW" --run-id "${{ github.run_id }}" --run-number "${{ github.run_number }}" --event "${{ github.event_name }}" --ref "${{ github.ref }}" --sha "${{ github.sha }}" --status completed --conclusion "${{ steps.conclusion.outputs.conclusion }}" --actor "${{ github.actor }}" --html-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Commit status
+        run: |
+          set -euo pipefail
+          git config user.name "craftty-bot"
+          git config user.email "craftty-bot@users.noreply.github.com"
+          git add status/
+          git diff --cached --quiet && exit 0
+          git commit -m "status: $STATUS_WORKFLOW ${{ steps.conclusion.outputs.conclusion }} [skip ci]"
+          for i in 1 2 3; do git pull --rebase origin main && git push origin HEAD:main && break; sleep 5; done
