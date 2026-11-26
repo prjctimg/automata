@@ -48,7 +48,7 @@ jobs:
       - name: Run stale bot
         env:
           GH_TOKEN: ${{ secrets.CRAFTTY_BOT_TOKEN }}
-          REPOS: ${{ github.event.inputs.repos || 'craftty-org/gtm,craftty-org/gtw,craftty-org/gtm.nvim,craftty-org/gtm.docs,craftty-org/tuikit,craftty-org/xplora,craftty-org/learn_odin' }}
+          REPOS: ${{ github.event.inputs.repos || 'craftty-org/gtm,craftty-org/gtw,craftty-org/gtm.nvim,craftty-org/gtm.docs,craftty-org/tuikit,craftty-org/xplora,craftty-org/learn_odin,craftty-org/aoc-tui' }}
           STALE_DAYS: "60"
           CLOSE_DAYS: "14"
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
