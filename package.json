@@ -3,7 +3,11 @@
   "version": "1.0.0",
   "description": "Automated manpage generation repository for p5.nvim",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "bot:tui": "node scripts/bot/tui.mjs",
+    "bot:stale": "node scripts/bot/stale.mjs",
+    "bot:close-issues": "node scripts/bot/close-mentioned-issues.mjs",
+    "bot:build": "bash scripts/bot/build-binary.sh"
   },
   "keywords": [
     "automation",
